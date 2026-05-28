@@ -183,7 +183,7 @@ export function classifyChange(
   return { filePath: newFp.filePath, changeLevel, details };
 }
 
-function signaturesEqual<T extends Record<string, unknown>>(a: T[], b: T[]): boolean {
+function signaturesEqual<T extends object>(a: T[], b: T[]): boolean {
   if (a.length !== b.length) return false;
   const serialize = (x: T) => JSON.stringify(x, Object.keys(x).sort());
   const setA = new Set(a.map(serialize));

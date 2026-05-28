@@ -1,10 +1,12 @@
 import type { AgentInput, AgentOutput, Finding } from '../core/types.js';
-import { createLogger } from '../utils/logger.js';
+import { createLogger, type Logger } from '../utils/logger.js';
 
 export abstract class BaseAgent {
-  protected logger = createLogger(this.name);
+  protected logger: Logger;
 
-  constructor(public readonly name: string) {}
+  constructor(public readonly name: string) {
+    this.logger = createLogger(name);
+  }
 
   async run(input: AgentInput): Promise<AgentOutput> {
     this.logger.info(`Starting execution for task ${input.taskId}`);
