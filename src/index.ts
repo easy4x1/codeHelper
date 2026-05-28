@@ -7,8 +7,9 @@ import { FaultDetectorAgent } from './agents/fault-detector-agent.js';
 import { ContextBuilderAgent } from './agents/context-builder-agent.js';
 import { SolutionPlannerAgent } from './agents/solution-planner-agent.js';
 import { KnowledgeGraphBuilder } from './core/knowledge-graph.js';
-import { writeFile, readFile, access, mkdir } from 'fs/promises';
+import { writeFile, readFile, access, mkdir, stat } from 'fs/promises';
 import { join, resolve, dirname } from 'path';
+import { pathToFileURL } from 'url';
 import type { RepairTask, SolutionPlan } from './core/types.js';
 
 export interface AgentConfig {
@@ -26,6 +27,12 @@ export class CodeRepairAgent {
   }
 
   async init(repoPath: string): Promise<{ files: string[]; fingerprintCount: number }> {
+    const resolvedPath = resolve(repoPath);
+    const stats = await stat(resolvedPath);
+    if (!stats.isDirectory()) {
+      throw new Error(`Path is not a directory: ${repoPath}`);
+    }
+
     const scanner = new RepoScannerAgent(this.memory);
     const result = await scanner.run({
       taskId: `init-${Date.now()}`,
@@ -101,10 +108,14 @@ export class CodeRepairAgent {
 
   async loadMemory(path: string): Promise<void> {
     try {
-      await access(path);
       const data = await readFile(path, 'utf-8');
       this.memory = MemoryMiddleware.deserialize(data);
-    } catch {
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        this.logger.error(`Failed to load memory from ${path}:`, err);
+        throw err;
+      }
       // File doesn't exist, use fresh memory
     }
   }
@@ -128,10 +139,15 @@ async function main(): Promise<void> {
     .description('Initialize agent for a repository')
     .argument('[repo-path]', 'Path to repository', '.')
     .action(async (repoPath: string) => {
-      const agent = new CodeRepairAgent({ verbose: true });
-      const result = await agent.init(repoPath);
-      await agent.saveMemory(join(resolve(repoPath), '.repair-agent', 'memory.json'));
-      console.log(`Initialized: ${result.fingerprintCount} files scanned`);
+      try {
+        const agent = new CodeRepairAgent({ verbose: true });
+        const result = await agent.init(repoPath);
+        await agent.saveMemory(join(resolve(repoPath), '.repair-agent', 'memory.json'));
+        console.log(`Initialized: ${result.fingerprintCount} files scanned`);
+      } catch (err) {
+        console.error(err);
+        process.exit(1);
+      }
     });
 
   program
@@ -141,30 +157,35 @@ async function main(): Promise<void> {
     .option('-r, --repo <path>', 'Repository path', '.')
     .option('--file <file>', 'Target file(s)', collect, [])
     .action(async (description: string, options: { repo: string; file: string[] }) => {
-      const agent = new CodeRepairAgent({ verbose: true });
-      const memoryPath = join(resolve(options.repo), '.repair-agent', 'memory.json');
-      await agent.loadMemory(memoryPath);
+      try {
+        const agent = new CodeRepairAgent({ verbose: true });
+        const memoryPath = join(resolve(options.repo), '.repair-agent', 'memory.json');
+        await agent.loadMemory(memoryPath);
 
-      const task: RepairTask = {
-        id: `task-${Date.now()}`,
-        description,
-        type: 'bug',
-        priority: 'medium',
-        context: {
-          files: options.file.length > 0 ? options.file : undefined,
-        },
-      };
+        const task: RepairTask = {
+          id: `task-${Date.now()}`,
+          description,
+          type: 'bug',
+          priority: 'medium',
+          context: {
+            files: options.file.length > 0 ? options.file : undefined,
+          },
+        };
 
-      const plan = await agent.plan(task);
-      console.log('\n=== Solution Plan ===\n');
-      console.log(`ID: ${plan.id}`);
-      console.log(`Problem: ${plan.problem.description}`);
-      console.log(`Root Cause: ${plan.problem.rootCause}`);
-      console.log(`\nChanges (${plan.changes.length}):`);
-      for (const change of plan.changes) {
-        console.log(`  - ${change.filePath}: ${change.description}`);
+        const plan = await agent.plan(task);
+        console.log('\n=== Solution Plan ===\n');
+        console.log(`ID: ${plan.id}`);
+        console.log(`Problem: ${plan.problem.description}`);
+        console.log(`Root Cause: ${plan.problem.rootCause}`);
+        console.log(`\nChanges (${plan.changes.length}):`);
+        for (const change of plan.changes) {
+          console.log(`  - ${change.filePath}: ${change.description}`);
+        }
+        console.log(`\nConfidence: ${(plan.metadata.confidence * 100).toFixed(1)}%`);
+      } catch (err) {
+        console.error(err);
+        process.exit(1);
       }
-      console.log(`\nConfidence: ${(plan.metadata.confidence * 100).toFixed(1)}%`);
     });
 
   program
@@ -172,15 +193,20 @@ async function main(): Promise<void> {
     .description('Show knowledge graph status')
     .argument('[repo-path]', 'Path to repository', '.')
     .action(async (repoPath: string) => {
-      const agent = new CodeRepairAgent({});
-      const memoryPath = join(resolve(repoPath), '.repair-agent', 'memory.json');
-      await agent.loadMemory(memoryPath);
-      const memory = agent.getMemory();
-      const graph = memory.getKnowledgeGraph();
-      const fingerprints = memory.getAllFingerprints();
-      console.log(`Nodes: ${graph.nodes.length}`);
-      console.log(`Edges: ${graph.edges.length}`);
-      console.log(`Fingerprints: ${Object.keys(fingerprints).length}`);
+      try {
+        const agent = new CodeRepairAgent({});
+        const memoryPath = join(resolve(repoPath), '.repair-agent', 'memory.json');
+        await agent.loadMemory(memoryPath);
+        const memory = agent.getMemory();
+        const graph = memory.getKnowledgeGraph();
+        const fingerprints = memory.getAllFingerprints();
+        console.log(`Nodes: ${graph.nodes.length}`);
+        console.log(`Edges: ${graph.edges.length}`);
+        console.log(`Fingerprints: ${Object.keys(fingerprints).length}`);
+      } catch (err) {
+        console.error(err);
+        process.exit(1);
+      }
     });
 
   await program.parseAsync();
@@ -191,7 +217,7 @@ function collect(value: string, previous: string[]): string[] {
 }
 
 // Only run CLI when this file is executed directly (not imported)
-if (import.meta.url === `file://${process.argv[1]}` || import.meta.url.endsWith(process.argv[1])) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch(err => {
     console.error(err);
     process.exit(1);

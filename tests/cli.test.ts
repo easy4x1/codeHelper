@@ -42,4 +42,16 @@ describe('CodeRepairAgent', () => {
     // Just verify no error thrown
     expect(true).toBe(true);
   });
+
+  it('deserializes memory from disk', async () => {
+    const agent = new CodeRepairAgent({});
+    await agent.init(fixturePath);
+    const memoryPath = '/tmp/test-memory-load.json';
+    await agent.saveMemory(memoryPath);
+
+    const agent2 = new CodeRepairAgent({});
+    await agent2.loadMemory(memoryPath);
+    const fingerprints = agent2.getMemory().getAllFingerprints();
+    expect(Object.keys(fingerprints).length).toBeGreaterThan(0);
+  });
 });
