@@ -47,11 +47,11 @@ export class MemoryMiddleware {
   }
 
   setRepoMemory(repoMemory: RepoMemory): void {
-    this.repoMemory = repoMemory;
+    this.repoMemory = JSON.parse(JSON.stringify(repoMemory));
   }
 
   getKnowledgeGraph(): KnowledgeGraph {
-    return this.repoMemory.knowledgeGraph;
+    return JSON.parse(JSON.stringify(this.repoMemory.knowledgeGraph));
   }
 
   setKnowledgeGraph(graph: KnowledgeGraph): void {
@@ -59,7 +59,8 @@ export class MemoryMiddleware {
   }
 
   getFingerprint(filePath: string): FileFingerprint | undefined {
-    return this.repoMemory.fingerprints[filePath];
+    const fp = this.repoMemory.fingerprints[filePath];
+    return fp ? JSON.parse(JSON.stringify(fp)) : undefined;
   }
 
   setFingerprint(fp: FileFingerprint): void {
@@ -97,7 +98,7 @@ export class MemoryMiddleware {
 
   // Learned Memory (L3)
   getLearnedMemory(): LearnedMemory {
-    return { ...this.learnedMemory };
+    return JSON.parse(JSON.stringify(this.learnedMemory));
   }
 
   // Serialization
