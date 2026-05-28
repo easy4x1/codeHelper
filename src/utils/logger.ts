@@ -6,7 +6,12 @@ export class Logger {
   private log(level: LogLevel, message: string, ...args: unknown[]): void {
     const timestamp = new Date().toISOString();
     const prefix = this.prefix ? `[${this.prefix}]` : '';
-    console.log(`${timestamp} ${level.toUpperCase().padStart(5)} ${prefix} ${message}`, ...args);
+    const output = `${timestamp} ${level.toUpperCase().padStart(5)} ${prefix} ${message}`;
+    if (level === 'error') {
+      console.error(output, ...args);
+    } else {
+      console.log(output, ...args);
+    }
   }
 
   debug(message: string, ...args: unknown[]): void {

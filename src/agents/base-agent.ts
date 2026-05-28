@@ -16,17 +16,23 @@ export abstract class BaseAgent {
 
       this.logger.info(`Completed in ${duration}ms`);
 
+      // Extract findings safely
+      const findings = Array.isArray(result.findings) ? result.findings : [];
+
+      // Remove findings from result to avoid duplication
+      const { findings: _, ...resultWithoutFindings } = result;
+
       return {
         taskId: input.taskId,
         agentName: this.name,
         result: {
-          ...result,
+          ...resultWithoutFindings,
           _meta: {
             durationMs: duration,
             timestamp: new Date().toISOString(),
           },
         },
-        findings: (result.findings as Finding[] | undefined) || [],
+        findings,
       };
     } catch (error) {
       const duration = Date.now() - startTime;
