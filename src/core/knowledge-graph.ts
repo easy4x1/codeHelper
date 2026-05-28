@@ -5,7 +5,9 @@ export class KnowledgeGraphBuilder {
   private edges = new Map<string, GraphEdge>();
 
   addNode(node: Omit<GraphNode, 'id'> & { id: string }): void {
-    this.nodes.set(node.id, { ...node });
+    if (!this.nodes.has(node.id)) {
+      this.nodes.set(node.id, { ...node });
+    }
   }
 
   addEdge(source: string, target: string, type: GraphEdge['type'], weight: number): void {

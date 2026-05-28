@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { KnowledgeGraphBuilder } from '../src/core/knowledge-graph.js';
+import { KnowledgeGraphBuilder, mergeGraphs } from '../src/core/knowledge-graph.js';
 import type { GraphNode, GraphEdge } from '../src/core/types.js';
 
 describe('KnowledgeGraphBuilder', () => {
@@ -64,5 +64,43 @@ describe('KnowledgeGraphBuilder', () => {
     const parsed = JSON.parse(json);
     expect(parsed.nodes).toHaveLength(1);
     expect(parsed.edges).toHaveLength(1);
+  });
+
+  it('gets nodes by type', () => {
+    const builder = new KnowledgeGraphBuilder();
+    builder.addNode({ id: 'a', type: 'file', name: 'a.ts' });
+    builder.addNode({ id: 'b', type: 'function', name: 'b' });
+    builder.addNode({ id: 'c', type: 'function', name: 'c' });
+    const functions = builder.getNodesByType('function');
+    expect(functions).toHaveLength(2);
+    expect(functions.map(n => n.name)).toContain('b');
+    expect(functions.map(n => n.name)).toContain('c');
+  });
+
+  it('reconstructs from existing graph', () => {
+    const builder = new KnowledgeGraphBuilder();
+    builder.addNode({ id: 'a', type: 'file', name: 'a.ts' });
+    builder.addNode({ id: 'b', type: 'function', name: 'b' });
+    builder.addEdge('a', 'b', 'contains', 1.0);
+    const graph = builder.build();
+
+    const rebuilt = KnowledgeGraphBuilder.fromGraph(graph);
+    expect(rebuilt.findNode('a')).toBeDefined();
+    expect(rebuilt.findNeighbors('a')).toHaveLength(1);
+  });
+
+  it('merges two graphs', () => {
+    const builder1 = new KnowledgeGraphBuilder();
+    builder1.addNode({ id: 'a', type: 'file', name: 'a.ts' });
+    const graph1 = builder1.build();
+
+    const builder2 = new KnowledgeGraphBuilder();
+    builder2.addNode({ id: 'b', type: 'file', name: 'b.ts' });
+    builder2.addEdge('b', 'c', 'contains', 1.0);
+    const graph2 = builder2.build();
+
+    const merged = mergeGraphs(graph1, graph2);
+    expect(merged.nodes).toHaveLength(2);
+    expect(merged.edges).toHaveLength(1);
   });
 });
