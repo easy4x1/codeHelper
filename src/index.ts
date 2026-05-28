@@ -10,6 +10,7 @@ import { KnowledgeGraphBuilder } from './core/knowledge-graph.js';
 import { writeFile, readFile, access, mkdir, stat } from 'fs/promises';
 import { join, resolve, dirname } from 'path';
 import { pathToFileURL } from 'url';
+import { createLogger } from './utils/logger.js';
 import type { RepairTask, SolutionPlan } from './core/types.js';
 
 export interface AgentConfig {
@@ -20,6 +21,7 @@ export interface AgentConfig {
 export class CodeRepairAgent {
   private memory: MemoryMiddleware;
   private config: AgentConfig;
+  private logger = createLogger('code-repair-agent');
 
   constructor(config: AgentConfig = {}) {
     this.config = config;
