@@ -1,5 +1,5 @@
 import { readdir, readFile, stat } from 'fs/promises';
-import { join, relative } from 'path';
+import { join, relative, extname } from 'path';
 import { computeFingerprint } from './fingerprint.js';
 import type { FileFingerprint } from './types.js';
 
@@ -7,6 +7,7 @@ export interface ScanResult {
   files: { filePath: string; absolutePath: string }[];
   fingerprints: FileFingerprint[];
   languages: Set<string>;
+  skippedFiles: string[];
 }
 
 const SOURCE_EXTENSIONS = new Set([
@@ -30,35 +31,44 @@ const IGNORED_FILES = new Set([
 export async function scanRepo(repoPath: string): Promise<ScanResult> {
   const files: { filePath: string; absolutePath: string }[] = [];
   const languages = new Set<string>();
+  const skippedFiles: string[] = [];
 
-  await walkDir(repoPath, repoPath, files, languages);
+  await walkDir(repoPath, repoPath, files, languages, skippedFiles);
 
   const fingerprints: FileFingerprint[] = [];
-  for (const file of files) {
-    try {
-      const content = await readFile(file.absolutePath, 'utf-8');
-      const fp = computeFingerprint(file.filePath, content);
-      fingerprints.push(fp);
-    } catch {
-      // Skip unreadable files
-    }
-  }
+  await Promise.all(
+    files.map(async (file) => {
+      try {
+        const content = await readFile(file.absolutePath, 'utf-8');
+        const fp = computeFingerprint(file.filePath, content);
+        fingerprints.push(fp);
+      } catch {
+        skippedFiles.push(file.filePath);
+      }
+    })
+  );
 
-  return { files, fingerprints, languages };
+  return { files, fingerprints, languages, skippedFiles };
 }
 
 async function walkDir(
   rootPath: string,
   currentPath: string,
   files: { filePath: string; absolutePath: string }[],
-  languages: Set<string>
+  languages: Set<string>,
+  skippedFiles: string[]
 ): Promise<void> {
   const entries = await readdir(currentPath, { withFileTypes: true });
 
   for (const entry of entries) {
+    if (entry.isSymbolicLink()) {
+      skippedFiles.push(relative(rootPath, join(currentPath, entry.name)));
+      continue;
+    }
+
     if (entry.isDirectory()) {
       if (!IGNORED_DIRS.has(entry.name)) {
-        await walkDir(rootPath, join(currentPath, entry.name), files, languages);
+        await walkDir(rootPath, join(currentPath, entry.name), files, languages, skippedFiles);
       }
       continue;
     }
@@ -66,7 +76,7 @@ async function walkDir(
     if (entry.isFile()) {
       if (IGNORED_FILES.has(entry.name)) continue;
 
-      const ext = entry.name.slice(entry.name.lastIndexOf('.'));
+      const ext = extname(entry.name);
       if (!SOURCE_EXTENSIONS.has(ext)) continue;
 
       const absolutePath = join(currentPath, entry.name);
