@@ -1,4 +1,5 @@
 import { createLogger } from '../utils/logger.js';
+import { maskApiKey, type LlmProviderConfig } from './llm-config.js';
 
 const logger = createLogger('llm-service');
 
@@ -293,12 +294,13 @@ export class AnthropicLlmService implements LlmService {
   private client: InstanceType<typeof import('@anthropic-ai/sdk').default> | undefined;
   private fallback = new TemplateLlmService();
 
-  constructor() {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+  constructor(config?: LlmProviderConfig) {
+    const apiKey = config?.apiKey ?? process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
       logger.warn('ANTHROPIC_API_KEY not set — AnthropicLlmService will use TemplateLlmService fallback');
       return;
     }
+    logger.info(`Initializing Anthropic client (key: ${maskApiKey(apiKey)})`);
     this.initClient(apiKey).catch(err => {
       logger.error('Failed to initialize Anthropic client:', err);
     });
@@ -422,4 +424,90 @@ Respond ONLY with a JSON object in this exact format (no markdown, no explanatio
       return this.fallback.generateSolution(params);
     }
   }
+}
+
+// ============================================
+// Generic HTTP LLM Service (OpenAI-compatible APIs)
+// Supports: OpenAI, Moonshot (Kimi), DeepSeek, Zhipu (GLM)
+// ============================================
+
+const PROVIDER_BASE_URLS: Record<string, string> = {
+  openai: 'https://api.openai.com/v1',
+  moonshot: 'https://api.moonshot.cn/v1',
+  deepseek: 'https://api.deepseek.com/v1',
+  zhipu: 'https://open.bigmodel.cn/api/paas/v4',
+};
+
+/**
+ * Generic HTTP-based LLM service for OpenAI-compatible providers.
+ *
+ * Falls back to TemplateLlmService when:
+ * - API key is missing
+ * - Network request fails
+ * - Response cannot be parsed
+ */
+export class HttpLlmService implements LlmService {
+  private fallback = new TemplateLlmService();
+  private baseUrl: string;
+
+  constructor(private config: LlmProviderConfig) {
+    this.baseUrl = config.baseUrl ?? PROVIDER_BASE_URLS[config.provider] ?? '';
+    logger.info(
+      `Initializing ${config.provider} HTTP client (model: ${config.model}, key: ${maskApiKey(config.apiKey)})`
+    );
+  }
+
+  async analyzeFault(params: FaultAnalysisParams): Promise<FaultAnalysisResult> {
+    if (!this.config.apiKey || !this.baseUrl) {
+      logger.info(`${this.config.provider} not configured — using template fallback`);
+      return this.fallback.analyzeFault(params);
+    }
+    try {
+      return await this.callApi('analyzeFault', params);
+    } catch (err) {
+      logger.error(`${this.config.provider} analyzeFault failed, using fallback:`, err);
+      return this.fallback.analyzeFault(params);
+    }
+  }
+
+  async generateSolution(params: SolutionParams): Promise<SolutionResult> {
+    if (!this.config.apiKey || !this.baseUrl) {
+      logger.info(`${this.config.provider} not configured — using template fallback`);
+      return this.fallback.generateSolution(params);
+    }
+    try {
+      return await this.callApi('generateSolution', params);
+    } catch (err) {
+      logger.error(`${this.config.provider} generateSolution failed, using fallback:`, err);
+      return this.fallback.generateSolution(params);
+    }
+  }
+
+  private async callApi<R>(
+    _method: string,
+    _params: unknown
+  ): Promise<R> {
+    // MVP: placeholder — real implementation would call the provider's chat.completions API
+    // and parse the JSON response. For now, fall through to fallback.
+    throw new Error('HTTP LLM service not yet implemented for ' + this.config.provider);
+  }
+}
+
+// ============================================
+// Factory
+// ============================================
+
+/**
+ * Create an LlmService instance from provider configuration.
+ *
+ * @param config Resolved provider config (or null for template fallback)
+ */
+export function createLlmService(config: LlmProviderConfig | null): LlmService {
+  if (!config || config.provider === 'template') {
+    return new TemplateLlmService();
+  }
+  if (config.provider === 'anthropic') {
+    return new AnthropicLlmService(config);
+  }
+  return new HttpLlmService(config);
 }

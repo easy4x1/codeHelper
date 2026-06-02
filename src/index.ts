@@ -18,13 +18,20 @@ import { applyPatch, type FilePatch, type PatchResult } from './core/patch.js';
 import { syncRepo } from './core/sync.js';
 import { formatDiff, formatPatchResult, createReviewPrompt } from './interface/cli-review.js';
 import { createInterface } from 'readline';
-import { AnthropicLlmService, TemplateLlmService, type LlmService } from './core/llm-service.js';
+import { createLlmService, type LlmService } from './core/llm-service.js';
 import { TokenBudgetManager } from './core/token-budget.js';
+import { LlmConfigResolver } from './core/llm-config.js';
+import { ModelAwareTokenEstimator } from './core/token-estimator.js';
 
 export interface AgentConfig {
   verbose?: boolean;
   memoryPath?: string;
+  /** @deprecated Use `provider` instead */
   llmService?: 'anthropic' | 'template';
+  /** LLM provider: anthropic | openai | moonshot | deepseek | zhipu | template */
+  provider?: string;
+  /** Model name (e.g. 'claude-sonnet-4-6', 'kimi-k2.5', 'glm-5.1', 'gpt-5.4') */
+  model?: string;
   tokenBudget?: {
     total?: number;
     analysis?: number;
@@ -44,9 +51,15 @@ export class CodeRepairAgent {
   constructor(config: AgentConfig = {}) {
     this.config = config;
     this.memory = new MemoryMiddleware();
-    this.llmService = config.llmService === 'anthropic'
-      ? new AnthropicLlmService()
-      : new TemplateLlmService();
+
+    // Resolve LLM provider configuration securely
+    const provider = config.provider ?? (config.llmService === 'anthropic' ? 'anthropic' : undefined);
+    const resolved = new LlmConfigResolver().resolve(provider, config.model);
+    this.llmService = createLlmService(resolved?.config ?? null);
+
+    // Token estimator tied to the selected model for accurate budget tracking
+    const modelName = resolved?.config.model ?? 'default';
+    const estimator = new ModelAwareTokenEstimator(modelName);
     this.budgetManager = new TokenBudgetManager(
       config.tokenBudget
         ? {
@@ -58,7 +71,8 @@ export class CodeRepairAgent {
               review: config.tokenBudget.review ?? 5000,
             },
           }
-        : undefined
+        : undefined,
+      estimator
     );
   }
 
@@ -238,15 +252,16 @@ async function main(): Promise<void> {
     .argument('<description>', 'Problem description')
     .option('-r, --repo <path>', 'Repository path', '.')
     .option('--file <file>', 'Target file(s)', collect, [])
-    .option('--llm <provider>', 'LLM provider: anthropic | template', 'template')
+    .option('--provider <name>', 'LLM provider: anthropic | openai | moonshot | deepseek | zhipu | template', 'template')
+    .option('--model <name>', 'Model name (e.g. claude-sonnet-4-6, kimi-k2.5, glm-5.1, gpt-5.4)')
     .option('--budget <tokens>', 'Total token budget', '50000')
-    .action(async (description: string, options: { repo: string; file: string[]; llm: string; budget: string }) => {
+    .action(async (description: string, options: { repo: string; file: string[]; provider: string; model?: string; budget: string }) => {
       try {
-        const llmService = options.llm === 'anthropic' ? 'anthropic' as const : 'template' as const;
         const total = parseInt(options.budget, 10);
         const agent = new CodeRepairAgent({
           verbose: true,
-          llmService,
+          provider: options.provider,
+          model: options.model,
           tokenBudget: {
             total,
             analysis: Math.floor(total * 0.4),

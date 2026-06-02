@@ -664,7 +664,7 @@ function extractExportsRegex(content: string): ExportSignature[] {
   return exports;
 }
 
-function signaturesEqual<T extends Record<string, unknown>>(a: T[], b: T[]): boolean {
+function signaturesEqual<T extends object>(a: T[], b: T[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
     if (!deepEqual(a[i], b[i])) return false;

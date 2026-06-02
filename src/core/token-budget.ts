@@ -5,6 +5,7 @@ import type {
   BudgetRecommendations,
 } from './types.js';
 import { createLogger } from '../utils/logger.js';
+import { ModelAwareTokenEstimator, type TokenEstimator } from './token-estimator.js';
 
 export const DEFAULT_CONFIG: TokenBudgetConfig = {
   total: 50000,
@@ -37,9 +38,11 @@ export class TokenBudgetManager {
     review: number;
   };
   private logger = createLogger('token-budget');
+  private estimator: TokenEstimator;
 
-  constructor(config?: TokenBudgetConfig) {
+  constructor(config?: TokenBudgetConfig, estimator?: TokenEstimator) {
     this.config = config ?? DEFAULT_CONFIG;
+    this.estimator = estimator ?? new ModelAwareTokenEstimator();
     this.usageByCategory = {
       analysis: 0,
       search: 0,
@@ -101,6 +104,11 @@ export class TokenBudgetManager {
     return estimatedTokens <= categoryRemaining && estimatedTokens <= status.remaining;
   }
 
+  estimateTokens(text: string): number {
+    return this.estimator.estimate(text);
+  }
+
+  /** Backward-compatible static method (uses rough 1:4 estimate). */
   static estimateTokens(text: string): number {
     return Math.ceil(text.length / 4);
   }
