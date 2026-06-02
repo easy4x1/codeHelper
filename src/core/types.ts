@@ -246,3 +246,148 @@ export interface FileChange {
   originalCode?: string;
   modifiedCode?: string;
 }
+
+// ============================================
+// Propagation Engine Types
+// ============================================
+
+export interface PropagationOptions {
+  direction: 'upstream' | 'downstream' | 'both';
+  maxDepth: number;
+  minEdgeWeight: number;
+  includeTests: boolean;
+}
+
+export interface AffectedNode {
+  nodeId: string;
+  nodeType: NodeType;
+  impactProbability: number;
+  distance: number;
+  path: string[];
+}
+
+export interface RootCauseCandidate {
+  nodeId: string;
+  nodeType: NodeType;
+  confidence: number;
+  reasoning: string;
+}
+
+export interface PropagationPath {
+  fromNodeId: string;
+  toNodeId: string;
+  edgeType: EdgeType;
+  weight: number;
+}
+
+export interface PropagationResult {
+  entryPoints: string[];
+  affectedNodes: AffectedNode[];
+  rootCauseCandidates: RootCauseCandidate[];
+  propagationPaths: PropagationPath[];
+}
+
+// ============================================
+// Token Budget Types
+// ============================================
+
+export interface TokenBudgetConfig {
+  total: number;
+  allocated: {
+    analysis: number;
+    search: number;
+    planning: number;
+    review: number;
+  };
+}
+
+export interface TokenBudgetStatus {
+  total: number;
+  allocated: {
+    analysis: number;
+    search: number;
+    planning: number;
+    review: number;
+  };
+  used: number;
+  remaining: number;
+  usageByCategory: {
+    analysis: number;
+    search: number;
+    planning: number;
+    review: number;
+  };
+}
+
+export type DegradationLevel =
+  | 'none'
+  | 'reduce_depth'
+  | 'disable_search'
+  | 'core_only'
+  | 'prompt_user';
+
+export interface BudgetRecommendations {
+  level: DegradationLevel;
+  shouldProceed: boolean;
+  adjustments: {
+    maxPropagationDepth?: number;
+    maxFilesToAnalyze?: number;
+    enableWebSearch?: boolean;
+    enableDetailedAnalysis?: boolean;
+  };
+  message: string;
+}
+
+// ============================================
+// Zod Runtime Validation Schemas
+// ============================================
+
+import { z } from 'zod';
+
+export const findingSchema = z.object({
+  id: z.string(),
+  type: z.enum(['fault', 'pattern', 'insight']),
+  description: z.string(),
+  confidence: z.number().min(0).max(1),
+  nodeIds: z.array(z.string()),
+});
+
+export const repoScannerContextSchema = z.object({
+  repoPath: z.string(),
+});
+
+export const faultDetectorContextSchema = z.object({
+  targetFiles: z.array(z.string()).optional().default([]),
+  repoPath: z.string().optional().default('.'),
+});
+
+export const contextBuilderContextSchema = z.object({
+  nodeIds: z.array(z.string()),
+});
+
+export const solutionPlannerContextSchema = z.object({
+  problem: z.string(),
+  findings: z.array(findingSchema).optional().default([]),
+  affectedFiles: z.array(z.string()).optional().default([]),
+  repoPath: z.string().optional().default('.'),
+});
+
+export const patchGeneratorContextSchema = z.object({
+  plan: z.record(z.string(), z.unknown()),
+});
+
+/**
+ * Safely parse agent context against a Zod schema.
+ * Throws a descriptive error if validation fails.
+ */
+export function parseContext<T extends z.ZodTypeAny>(
+  context: Record<string, unknown>,
+  schema: T
+): z.infer<T> {
+  const result = schema.safeParse(context);
+  if (!result.success) {
+    const issues = result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ');
+    throw new Error(`Invalid agent context: ${issues}`);
+  }
+  return result.data;
+}
