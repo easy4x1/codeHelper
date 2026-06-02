@@ -2,6 +2,7 @@ import { BaseAgent } from './base-agent.js';
 import { scanRepo, buildImportMap } from '../core/repo-scanner.js';
 import { MemoryMiddleware } from '../core/memory.js';
 import type { AgentInput } from '../core/types.js';
+import { repoScannerContextSchema, parseContext } from '../core/types.js';
 
 export class RepoScannerAgent extends BaseAgent {
   constructor(private memory: MemoryMiddleware) {
@@ -9,10 +10,7 @@ export class RepoScannerAgent extends BaseAgent {
   }
 
   protected async execute(input: AgentInput): Promise<Record<string, unknown>> {
-    const repoPath = input.context.repoPath as string;
-    if (!repoPath) {
-      throw new Error('repoPath is required in context');
-    }
+    const { repoPath } = parseContext(input.context, repoScannerContextSchema);
 
     this.logger.info(`Scanning repository at ${repoPath}`);
     const result = await scanRepo(repoPath);

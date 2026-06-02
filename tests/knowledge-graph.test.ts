@@ -103,4 +103,101 @@ describe('KnowledgeGraphBuilder', () => {
     expect(merged.nodes).toHaveLength(2);
     expect(merged.edges).toHaveLength(1);
   });
+
+  it('removes node and cleans up type index', () => {
+    const builder = new KnowledgeGraphBuilder();
+    builder.addNode({ id: 'a', type: 'file', name: 'a.ts' });
+    builder.addNode({ id: 'b', type: 'function', name: 'b' });
+
+    expect(builder.getNodesByType('file')).toHaveLength(1);
+    builder.removeNode('a');
+    expect(builder.getNodesByType('file')).toHaveLength(0);
+    expect(builder.getNodesByType('function')).toHaveLength(1);
+  });
+
+  it('removes edge and updates indexes', () => {
+    const builder = new KnowledgeGraphBuilder();
+    builder.addNode({ id: 'a', type: 'file', name: 'a.ts' });
+    builder.addNode({ id: 'b', type: 'function', name: 'b' });
+    builder.addEdge('a', 'b', 'contains', 1.0);
+
+    expect(builder.findNeighbors('a')).toHaveLength(1);
+    builder.removeEdge('a--contains--b');
+    expect(builder.findNeighbors('a')).toHaveLength(0);
+  });
+
+  it('removes edges by node efficiently', () => {
+    const builder = new KnowledgeGraphBuilder();
+    builder.addNode({ id: 'a', type: 'file', name: 'a.ts' });
+    builder.addNode({ id: 'b', type: 'function', name: 'b' });
+    builder.addNode({ id: 'c', type: 'function', name: 'c' });
+    builder.addEdge('a', 'b', 'contains', 1.0);
+    builder.addEdge('a', 'c', 'contains', 1.0);
+    builder.addEdge('b', 'c', 'calls', 0.8);
+
+    expect(builder.getEdgeCount()).toBe(3);
+    const removed = builder.removeEdgesByNode('a');
+    expect(removed).toBe(2);
+    expect(builder.getEdgeCount()).toBe(1);
+    expect(builder.findNeighbors('a')).toHaveLength(0);
+    expect(builder.findNeighbors('b')).toHaveLength(1); // b-c edge remains
+  });
+
+  it('prevents duplicate edges', () => {
+    const builder = new KnowledgeGraphBuilder();
+    builder.addNode({ id: 'a', type: 'file', name: 'a.ts' });
+    builder.addNode({ id: 'b', type: 'function', name: 'b' });
+    builder.addEdge('a', 'b', 'contains', 1.0);
+    builder.addEdge('a', 'b', 'contains', 1.0);
+
+    expect(builder.getEdgeCount()).toBe(1);
+  });
+
+  it('finds neighbors with bidirectional edges', () => {
+    const builder = new KnowledgeGraphBuilder();
+    builder.addNode({ id: 'a', type: 'file', name: 'a.ts' });
+    builder.addNode({ id: 'b', type: 'function', name: 'b' });
+    builder.addNode({ id: 'c', type: 'function', name: 'c' });
+    builder.addEdge('a', 'b', 'contains', 1.0);
+    builder.addEdge('c', 'a', 'imports', 0.7);
+
+    const neighbors = builder.findNeighbors('a');
+    expect(neighbors).toHaveLength(2);
+  });
+
+  it('filters neighbors by edge type', () => {
+    const builder = new KnowledgeGraphBuilder();
+    builder.addNode({ id: 'a', type: 'file', name: 'a.ts' });
+    builder.addNode({ id: 'b', type: 'function', name: 'b' });
+    builder.addNode({ id: 'c', type: 'function', name: 'c' });
+    builder.addEdge('a', 'b', 'contains', 1.0);
+    builder.addEdge('a', 'c', 'imports', 0.7);
+
+    const containsNeighbors = builder.findNeighbors('a', 'contains');
+    expect(containsNeighbors).toHaveLength(1);
+    expect(containsNeighbors[0].id).toBe('b');
+  });
+
+  it('handles large graph neighbor queries efficiently', () => {
+    const builder = new KnowledgeGraphBuilder();
+    const nodeCount = 1000;
+
+    // Create many nodes
+    for (let i = 0; i < nodeCount; i++) {
+      builder.addNode({ id: `node-${i}`, type: 'function', name: `fn-${i}` });
+    }
+
+    // Create edges for node-0 (high degree)
+    for (let i = 1; i <= 100; i++) {
+      builder.addEdge('node-0', `node-${i}`, 'calls', 0.8);
+    }
+
+    // Query neighbors — should be fast with indexes
+    const start = performance.now();
+    const neighbors = builder.findNeighbors('node-0');
+    const duration = performance.now() - start;
+
+    expect(neighbors).toHaveLength(100);
+    expect(duration).toBeLessThan(10); // Should be sub-millisecond with indexes
+  });
 });

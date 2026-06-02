@@ -1,7 +1,7 @@
 import { BaseAgent } from './base-agent.js';
 import { MemoryMiddleware } from '../core/memory.js';
 import { generatePatch, type FilePatch, type PatchResult } from '../core/patch.js';
-import type { AgentInput, SolutionPlan, FileChange } from '../core/types.js';
+import { patchGeneratorContextSchema, parseContext, type AgentInput, type SolutionPlan, type FileChange } from '../core/types.js';
 
 export class PatchGeneratorAgent extends BaseAgent {
   constructor(private memory: MemoryMiddleware) {
@@ -9,8 +9,9 @@ export class PatchGeneratorAgent extends BaseAgent {
   }
 
   protected async execute(input: AgentInput): Promise<Record<string, unknown>> {
-    const plan = input.context.plan as SolutionPlan;
-    if (!plan) {
+    const { plan: rawPlan } = parseContext(input.context, patchGeneratorContextSchema);
+    const plan = rawPlan as unknown as SolutionPlan;
+    if (!plan || !plan.changes) {
       throw new Error('plan is required in context');
     }
 
