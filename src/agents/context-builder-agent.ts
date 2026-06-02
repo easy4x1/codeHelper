@@ -1,6 +1,8 @@
 import { BaseAgent } from './base-agent.js';
 import { MemoryMiddleware } from '../core/memory.js';
-import type { AgentInput, GraphNode } from '../core/types.js';
+import { KnowledgeGraphBuilder } from '../core/knowledge-graph.js';
+import { PropagationEngine } from '../core/propagation.js';
+import { contextBuilderContextSchema, parseContext, type AgentInput, type GraphNode } from '../core/types.js';
 
 export class ContextBuilderAgent extends BaseAgent {
   constructor(private memory: MemoryMiddleware) {
@@ -8,31 +10,52 @@ export class ContextBuilderAgent extends BaseAgent {
   }
 
   protected async execute(input: AgentInput): Promise<Record<string, unknown>> {
-    const nodeIds = input.context.nodeIds as string[] || [];
+    const { nodeIds } = parseContext(input.context, contextBuilderContextSchema);
     const graph = this.memory.getKnowledgeGraph();
+
+    const builder = KnowledgeGraphBuilder.fromGraph(graph);
+    const engine = new PropagationEngine(builder);
+
+    const maxDepth =
+      typeof input.context.maxPropagationDepth === 'number'
+        ? input.context.maxPropagationDepth
+        : 3;
+
+    const traceResult = engine.trace(nodeIds, {
+      direction: 'both',
+      maxDepth,
+      minEdgeWeight: 0.5,
+      includeTests: false,
+    });
+
+    const uniqueIds = new Set<string>(nodeIds);
+    for (const affected of traceResult.affectedNodes) {
+      uniqueIds.add(affected.nodeId);
+    }
+
     const contextNodes: GraphNode[] = [];
-
-    for (const nodeId of nodeIds) {
-      const node = graph.nodes.find(n => n.id === nodeId);
-      if (!node) continue;
-
-      contextNodes.push(node);
-
-      // Add neighbors (callers, callees, containers)
-      for (const edge of graph.edges) {
-        if (edge.source === nodeId || edge.target === nodeId) {
-          const neighborId = edge.source === nodeId ? edge.target : edge.source;
-          const neighbor = graph.nodes.find(n => n.id === neighborId);
-          if (neighbor && !contextNodes.find(n => n.id === neighbor.id)) {
-            contextNodes.push(neighbor);
-          }
-        }
+    for (const id of uniqueIds) {
+      const node = builder.findNode(id);
+      if (node) {
+        contextNodes.push(node);
       }
     }
 
+    const maxImpactProbability =
+      traceResult.affectedNodes.length > 0
+        ? Math.max(...traceResult.affectedNodes.map(n => n.impactProbability))
+        : 0;
+
     return {
+      recalledNodes: contextNodes,
+      recalledCount: contextNodes.length,
       nodes: contextNodes,
       nodeCount: contextNodes.length,
+      propagationSummary: {
+        entryPoints: traceResult.entryPoints.length,
+        affectedNodes: traceResult.affectedNodes.length,
+        maxImpactProbability,
+      },
     };
   }
 }

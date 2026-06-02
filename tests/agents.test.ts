@@ -155,3 +155,35 @@ describe('PatchGeneratorAgent', () => {
     expect(output.result.patches[0].changeType).toBe('modify');
   });
 });
+
+describe('ContextBuilderAgent with propagation', () => {
+  it('recalls nodes via propagation', async () => {
+    const memory = new MemoryMiddleware();
+
+    // Set up a graph: file:a.ts contains foo and bar; foo calls bar
+    const { KnowledgeGraphBuilder } = await import('../src/core/knowledge-graph.js');
+    const builder = new KnowledgeGraphBuilder();
+    builder.addNode({ id: 'file:src/a.ts', type: 'file', name: 'a.ts', filePath: 'src/a.ts' });
+    builder.addNode({ id: 'function:src/a.ts:foo', type: 'function', name: 'foo', filePath: 'src/a.ts' });
+    builder.addNode({ id: 'function:src/a.ts:bar', type: 'function', name: 'bar', filePath: 'src/a.ts' });
+    builder.addEdge('file:src/a.ts', 'function:src/a.ts:foo', 'contains', 1.0);
+    builder.addEdge('file:src/a.ts', 'function:src/a.ts:bar', 'contains', 1.0);
+    builder.addEdge('function:src/a.ts:foo', 'function:src/a.ts:bar', 'calls', 0.8);
+
+    memory.setKnowledgeGraph(builder.build());
+
+    const agent = new ContextBuilderAgent(memory);
+    const output = await agent.run({
+      taskId: 'task-1',
+      instruction: 'Build context',
+      context: { nodeIds: ['function:src/a.ts:bar'] },
+    });
+
+    // bar is entry point, foo calls bar so foo should be recalled via upstream propagation
+    const recalledIds = (output.result.recalledNodes as Array<{ id: string }>).map(n => n.id);
+    expect(recalledIds).toContain('function:src/a.ts:bar');
+    expect(recalledIds).toContain('function:src/a.ts:foo');
+    expect(output.result.propagationSummary).toBeDefined();
+    expect((output.result.propagationSummary as Record<string, number>).affectedNodes).toBeGreaterThanOrEqual(1);
+  });
+});
