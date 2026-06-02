@@ -59,6 +59,9 @@ export class KnowledgeGraphBuilder {
       return false;
     }
 
+    // Remove all connected edges to prevent orphans
+    this.removeEdgesByNode(id);
+
     // Remove from type index
     const typeList = this.nodesByType.get(node.type);
     if (typeList) {

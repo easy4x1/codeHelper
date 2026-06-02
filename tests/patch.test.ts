@@ -64,4 +64,29 @@ describe('applyPatch', () => {
     };
     expect(() => applyPatch(patch, 'actual content')).toThrow();
   });
+
+  it('applies fuzzy match when surrounding context changed', () => {
+    const patch: FilePatch = {
+      filePath: 'src/greet.ts',
+      changeType: 'modify',
+      originalCode: '  return "hello";',
+      modifiedCode: '  return "hello world";',
+      diff: '',
+    };
+    const current = 'function greet() {\n  return "hello";\n}\n';
+    const result = applyPatch(patch, current);
+    expect(result).toBe('function greet() {\n  return "hello world";\n}\n');
+  });
+
+  it('still throws when original code block is not found anywhere', () => {
+    const patch: FilePatch = {
+      filePath: 'src/greet.ts',
+      changeType: 'modify',
+      originalCode: '  return "completely different";',
+      modifiedCode: '  return "new";',
+      diff: '',
+    };
+    const current = 'function greet() {\n  return "hello";\n}\n';
+    expect(() => applyPatch(patch, current)).toThrow('Patch conflict');
+  });
 });

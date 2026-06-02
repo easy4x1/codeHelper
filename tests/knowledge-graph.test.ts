@@ -115,6 +115,22 @@ describe('KnowledgeGraphBuilder', () => {
     expect(builder.getNodesByType('function')).toHaveLength(1);
   });
 
+  it('removes connected edges when removing a node (no orphan edges)', () => {
+    const builder = new KnowledgeGraphBuilder();
+    builder.addNode({ id: 'a', type: 'file', name: 'a.ts' });
+    builder.addNode({ id: 'b', type: 'function', name: 'b' });
+    builder.addEdge('a', 'b', 'contains', 1.0);
+    builder.addEdge('b', 'a', 'imports', 0.7);
+    expect(builder.getEdgeCount()).toBe(2);
+
+    builder.removeNode('a');
+    expect(builder.getEdgeCount()).toBe(0);
+    expect(builder.getEdgesBySource('a')).toHaveLength(0);
+    expect(builder.getEdgesByTarget('a')).toHaveLength(0);
+    expect(builder.getEdgesBySource('b')).toHaveLength(0);
+    expect(builder.getEdgesByTarget('b')).toHaveLength(0);
+  });
+
   it('removes edge and updates indexes', () => {
     const builder = new KnowledgeGraphBuilder();
     builder.addNode({ id: 'a', type: 'file', name: 'a.ts' });

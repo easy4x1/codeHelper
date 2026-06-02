@@ -664,14 +664,39 @@ function extractExportsRegex(content: string): ExportSignature[] {
   return exports;
 }
 
-function signaturesEqual<T extends object>(a: T[], b: T[]): boolean {
+function signaturesEqual<T extends Record<string, unknown>>(a: T[], b: T[]): boolean {
   if (a.length !== b.length) return false;
-  const serialize = (x: T) => JSON.stringify(x, Object.keys(x).sort());
-  const setA = new Set(a.map(serialize));
-  const setB = new Set(b.map(serialize));
-  if (setA.size !== setB.size) return false;
-  for (const item of setA) {
-    if (!setB.has(item)) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (!deepEqual(a[i], b[i])) return false;
+  }
+  return true;
+}
+
+/** Deep equality for plain objects and arrays (order-sensitive). */
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (a === null || b === null) return a === b;
+  if (typeof a !== 'object' || typeof b !== 'object') return false;
+
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!deepEqual(a[i], b[i])) return false;
+    }
+    return true;
+  }
+
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+
+  const keysA = Object.keys(a as Record<string, unknown>).sort();
+  const keysB = Object.keys(b as Record<string, unknown>).sort();
+  if (keysA.length !== keysB.length) return false;
+  for (let i = 0; i < keysA.length; i++) {
+    if (keysA[i] !== keysB[i]) return false;
+    if (!deepEqual((a as Record<string, unknown>)[keysA[i]], (b as Record<string, unknown>)[keysB[i]])) {
+      return false;
+    }
   }
   return true;
 }

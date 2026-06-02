@@ -45,11 +45,20 @@ export function applyPatch(patch: FilePatch, currentContent?: string): string {
     return '';
   }
 
-  // For modify, verify the current content matches the expected original
-  if (currentContent !== undefined && currentContent !== patch.originalCode) {
+  // For modify, try exact match first, then fuzzy match
+  if (currentContent !== undefined && patch.originalCode !== undefined) {
+    if (currentContent === patch.originalCode) {
+      return patch.modifiedCode || '';
+    }
+
+    // Fuzzy match: try to locate the original code block within the current file
+    if (currentContent.includes(patch.originalCode)) {
+      return currentContent.replace(patch.originalCode, patch.modifiedCode || '');
+    }
+
     throw new Error(
       `Patch conflict: ${patch.filePath} has changed since the patch was generated. ` +
-      'Expected:\n' + patch.originalCode + '\nActual:\n' + currentContent
+      `Could not find the expected code block.`
     );
   }
 
