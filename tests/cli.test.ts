@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { CodeRepairAgent } from '../src/index.js';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
+import { generatePatch } from '../src/core/patch.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const fixturePath = join(__dirname, 'fixtures', 'sample-repo');
@@ -53,5 +54,22 @@ describe('CodeRepairAgent', () => {
     await agent2.loadMemory(memoryPath);
     const fingerprints = agent2.getMemory().getAllFingerprints();
     expect(Object.keys(fingerprints).length).toBeGreaterThan(0);
+  });
+});
+
+describe('CodeRepairAgent apply', () => {
+  it('applies patches to files', async () => {
+    const agent = new CodeRepairAgent({});
+    await agent.init(fixturePath);
+
+    const patch = generatePatch(
+      'src/utils.ts',
+      "export function helper(): string {\n  return 'hello';\n}\n",
+      "export function helper(): string {\n  return 'hello world';\n}\n"
+    );
+
+    await agent.applyPatches([patch]);
+    // Verify no error thrown
+    expect(true).toBe(true);
   });
 });

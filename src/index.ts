@@ -12,6 +12,10 @@ import { join, resolve, dirname } from 'path';
 import { pathToFileURL } from 'url';
 import { createLogger } from './utils/logger.js';
 import type { RepairTask, SolutionPlan } from './core/types.js';
+import { PatchGeneratorAgent } from './agents/patch-generator-agent.js';
+import { applyPatch, type FilePatch, type PatchResult } from './core/patch.js';
+import { formatDiff, formatPatchResult, createReviewPrompt } from './interface/cli-review.js';
+import { createInterface } from 'readline';
 
 export interface AgentConfig {
   verbose?: boolean;
@@ -125,6 +129,29 @@ export class CodeRepairAgent {
   getMemory(): MemoryMiddleware {
     return this.memory;
   }
+
+  async applyPatches(patches: FilePatch[]): Promise<{ applied: string[]; failed: string[] }> {
+    const result = { applied: [] as string[], failed: [] as string[] };
+
+    for (const patch of patches) {
+      try {
+        const filePath = resolve(patch.filePath);
+        const currentContent = patch.changeType !== 'add'
+          ? await readFile(filePath, 'utf-8').catch(() => '')
+          : undefined;
+
+        const newContent = applyPatch(patch, currentContent);
+        await writeFile(filePath, newContent, 'utf-8');
+        result.applied.push(patch.filePath);
+        this.logger.info(`Applied patch: ${patch.filePath}`);
+      } catch (err) {
+        result.failed.push(patch.filePath);
+        this.logger.error(`Failed to apply patch: ${patch.filePath}`, err);
+      }
+    }
+
+    return result;
+  }
 }
 
 // CLI setup
@@ -205,6 +232,107 @@ async function main(): Promise<void> {
         console.log(`Nodes: ${graph.nodes.length}`);
         console.log(`Edges: ${graph.edges.length}`);
         console.log(`Fingerprints: ${Object.keys(fingerprints).length}`);
+      } catch (err) {
+        console.error(err);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('apply')
+    .description('Apply a solution plan (non-interactive)')
+    .argument('<plan-id>', 'Plan ID or plan JSON file')
+    .option('-r, --repo <path>', 'Repository path', '.')
+    .option('--dry-run', 'Show what would change without applying', false)
+    .action(async (planId: string, options: { repo: string; dryRun: boolean }) => {
+      try {
+        const agent = new CodeRepairAgent({ verbose: true });
+        const memoryPath = join(resolve(options.repo), '.repair-agent', 'memory.json');
+        await agent.loadMemory(memoryPath);
+
+        console.log('Apply command: plan ID =', planId);
+        console.log('Dry run:', options.dryRun);
+        console.log('(Full apply flow requires plan persistence - see Phase 4)');
+      } catch (err) {
+        console.error(err);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('fix')
+    .description('Analyze, plan, review, and apply (interactive)')
+    .argument('<description>', 'Problem description')
+    .option('-r, --repo <path>', 'Repository path', '.')
+    .option('--file <file>', 'Target file(s)', (val: string, prev: string[]) => prev.concat([val]), [])
+    .option('--auto-push', 'Automatically apply without confirmation', false)
+    .action(async (description: string, options: { repo: string; file: string[]; autoPush: boolean }) => {
+      try {
+        const agent = new CodeRepairAgent({ verbose: true });
+        const memoryPath = join(resolve(options.repo), '.repair-agent', 'memory.json');
+        await agent.loadMemory(memoryPath);
+
+        // Step 1: Plan
+        const task: RepairTask = {
+          id: `task-${Date.now()}`,
+          description,
+          type: 'bug',
+          priority: 'medium',
+          context: {
+            files: options.file.length > 0 ? options.file : undefined,
+          },
+        };
+
+        const plan = await agent.plan(task);
+        console.log('\n=== Solution Plan ===\n');
+        console.log(`ID: ${plan.id}`);
+        console.log(`Problem: ${plan.problem.description}`);
+        console.log(`Root Cause: ${plan.problem.rootCause}`);
+        console.log(`\nChanges (${plan.changes.length}):`);
+        for (const change of plan.changes) {
+          console.log(`  - ${change.filePath}: ${change.description}`);
+        }
+
+        // Step 2: Generate patches
+        const patchGenerator = new PatchGeneratorAgent(agent.getMemory());
+        const patchResult = await patchGenerator.run({
+          taskId: task.id,
+          instruction: 'Generate patches for the plan',
+          context: { plan },
+        });
+
+        const patches = patchResult.result.patches as FilePatch[];
+        const patchSummary = patchResult.result.summary as PatchResult['summary'];
+
+        console.log(formatPatchResult({ patches, summary: patchSummary }));
+
+        // Step 3: Show diffs
+        for (const patch of patches) {
+          console.log(formatDiff(patch));
+        }
+
+        // Step 4: Review prompt
+        if (options.autoPush) {
+          console.log('Auto-applying (auto-push flag set)...');
+          const result = await agent.applyPatches(patches);
+          console.log(`Applied: ${result.applied.length}, Failed: ${result.failed.length}`);
+        } else {
+          const rl = createInterface({ input: process.stdin, output: process.stdout });
+          const answer = await new Promise<string>((resolve) => {
+            rl.question(createReviewPrompt(), resolve);
+          });
+          rl.close();
+
+          if (answer.toLowerCase() === 'a' || answer.toLowerCase() === 'approve') {
+            const result = await agent.applyPatches(patches);
+            console.log(`\nApplied: ${result.applied.length} file(s)`);
+            if (result.failed.length > 0) {
+              console.log(`Failed: ${result.failed.join(', ')}`);
+            }
+          } else {
+            console.log('Changes rejected. No files modified.');
+          }
+        }
       } catch (err) {
         console.error(err);
         process.exit(1);
