@@ -293,6 +293,8 @@ async function loadAnthropic(): Promise<typeof import('@anthropic-ai/sdk').defau
 export class AnthropicLlmService implements LlmService {
   private client: InstanceType<typeof import('@anthropic-ai/sdk').default> | undefined;
   private fallback = new TemplateLlmService();
+  private model = 'claude-sonnet-4-6-20251001';
+  private baseUrl?: string;
 
   constructor(config?: LlmProviderConfig) {
     const apiKey = config?.apiKey ?? process.env.ANTHROPIC_API_KEY;
@@ -300,7 +302,20 @@ export class AnthropicLlmService implements LlmService {
       logger.warn('ANTHROPIC_API_KEY not set — AnthropicLlmService will use TemplateLlmService fallback');
       return;
     }
-    logger.info(`Initializing Anthropic client (key: ${maskApiKey(apiKey)})`);
+
+    // Model priority: config > ANTHROPIC_MODEL env > ANTHROPIC_DEFAULT_* env > default
+    this.model =
+      config?.model ??
+      process.env.ANTHROPIC_MODEL ??
+      process.env.ANTHROPIC_DEFAULT_SONNET_MODEL ??
+      'claude-sonnet-4-6-20251001';
+
+    // Base URL: config > ANTHROPIC_BASE_URL env > undefined (SDK default)
+    this.baseUrl = config?.baseUrl ?? process.env.ANTHROPIC_BASE_URL;
+
+    logger.info(
+      `Initializing Anthropic client (model: ${this.model}, baseUrl: ${this.baseUrl ?? 'default'}, key: ${maskApiKey(apiKey)})`
+    );
     this.initClient(apiKey).catch(err => {
       logger.error('Failed to initialize Anthropic client:', err);
     });
@@ -308,7 +323,11 @@ export class AnthropicLlmService implements LlmService {
 
   private async initClient(apiKey: string): Promise<void> {
     const Anthropic = await loadAnthropic();
-    this.client = new Anthropic({ apiKey });
+    const options: { apiKey: string; baseURL?: string } = { apiKey };
+    if (this.baseUrl) {
+      options.baseURL = this.baseUrl;
+    }
+    this.client = new Anthropic(options);
   }
 
   async analyzeFault(params: FaultAnalysisParams): Promise<FaultAnalysisResult> {
@@ -345,7 +364,7 @@ Respond ONLY with a JSON object in this exact format (no markdown, no explanatio
 }`;
 
       const response = await this.client.messages.create({
-        model: 'claude-sonnet-4-6-20251001',
+        model: this.model,
         max_tokens: 2048,
         messages: [{ role: 'user', content: prompt }],
       });
