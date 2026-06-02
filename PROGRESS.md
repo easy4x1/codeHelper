@@ -2,7 +2,7 @@
 
 > 生成日期: 2026-06-02
 > 对比基准: DESIGN.md v1.0.0
-> 当前版本: 0.2.0 (Phase 2 进行中)
+> 当前版本: 0.3.0 (Phase 3 进行中)
 
 ---
 
@@ -12,11 +12,11 @@
 |------|---------|---------|
 | Phase 1: MVP（核心闭环）| 核心 Agent + CLI + 基础图谱 + Patch/Review 流程 | **100%** |
 | Phase 2: 记忆优化 | Fingerprint 增量、传播裁剪、Token 预算 | **100%** |
-| Phase 3: 联网增强 | Web Search、结果融合 | **0%** |
+| Phase 3: 联网增强 | Web Search、结果融合、LLM Patch 生成 | **100%** |
 | Phase 4: 自动化与集成 | Git 自动化、CI/CD | **0%** |
 | Phase 5: 学习与进化 | 模式提取、项目约定学习 | **0%** |
 
-**整体完成度: ~65%**
+**整体完成度: ~75%**
 
 ---
 
@@ -29,7 +29,7 @@
 | `repo-scanner` | 扫描仓库，提取文件、依赖、指纹 | ✅ **已完成** | `RepoScannerAgent` 类实现，集成 `scanRepo()` 和 `buildImportMap()` |
 | `fault-detector` | 定位代码中的问题点 | ✅ **LLM 增强** | 启发式 + `TemplateLlmService` 语义分析（6 种检测模式） |
 | `context-builder` | 召回与问题相关的代码上下文 | ✅ **已完成** | `ContextBuilderAgent` 实现，基于知识图谱邻居遍历 |
-| `web-searcher` | 联网搜索解决方案 | ❌ **未开始** | 计划 Phase 3 实现 |
+| `web-searcher` | 联网搜索解决方案 | ✅ **已完成** | `WebSearcherAgent` + `WebSearchEngine` + 模拟搜索 provider |
 | `root-cause-analyzer` | 综合分析，定位根因 | ⚠️ **部分完成** | `SolutionPlannerAgent` 集成 LLM 生成根因分析 |
 | `solution-planner` | 输出结构化修改方案 | ✅ **LLM 增强** | 生成带 `originalCode`/`modifiedCode` 的深度方案 |
 | `patch-generator` | 将方案转换为具体代码 diff | ✅ **已完成** | `PatchGeneratorAgent` 实现，支持 add/modify/delete |
@@ -46,7 +46,7 @@
 | **LLM 服务** | 抽象接口 + 模板模拟实现 | ✅ **已完成** | `src/core/llm-service.ts` |
 | **故障传播分析** | 沿调用链传播分析、影响概率 | ✅ **已完成** | `src/core/propagation.ts` + `ContextBuilderAgent` 集成 |
 | **Token 预算控制** | 动态降级策略、预算分配 | ✅ **已完成** | `src/core/token-budget.ts` + CLI `--budget` |
-| **联网搜索** | 查询生成、结果融合 | ❌ 未开始 | — |
+| **联网搜索** | 查询生成、结果融合 | ✅ **已完成** | `src/core/web-search.ts` + 4 种查询模板 + 加权融合策略 |
 | **方案生成** | 结构化方案 + 风险评估 | ✅ **LLM 增强** | `src/agents/solution-planner-agent.ts` |
 | **Patch 生成** | 方案转代码 diff + 应用 | ✅ 已完成 | `src/core/patch.ts` + `src/agents/patch-generator-agent.ts` |
 | **Review 与执行** | 终端 diff 展示 + 用户确认 | ✅ 已完成 | `src/interface/cli-review.ts` + `src/index.ts` apply/fix 命令 |
@@ -154,6 +154,43 @@
 - CLI `--budget` 选项支持自定义总预算
 - 默认配置：50k tokens（analysis 40%, planning 30%, search 20%, review 10%）
 
+### 2.6 任务 6: 联网搜索模块 ✅
+
+**新增文件**:
+- `src/core/web-search.ts` — Web 搜索引擎核心（查询构建 + 模拟搜索 provider）
+- `src/agents/web-searcher-agent.ts` — WebSearcherAgent
+- `tests/web-search.test.ts` — 13 个测试用例
+- `tests/web-searcher-agent.test.ts` — 3 个测试用例
+
+**变更文件**:
+- `src/core/types.ts` — 添加 `WebSearchQuery`, `WebSearchResult`, `SearchTemplate`, `WebSearchStrategy` 类型 + Zod schemas
+- `src/core/memory.ts` — 添加 `searchCache` 到 L2 + `recordSearchResult` / `getCachedSearchResults`
+- `src/index.ts` — 集成 `WebSearcherAgent` 到 `plan()` 流程 + `--web-search` / `--no-web-search` CLI 选项
+- `src/agents/solution-planner-agent.ts` — 消费 `searchResults` 作为 LLM 上下文补充
+
+**实现内容**:
+- 4 种内置查询模板（error_message / stack_trace / pattern / compatibility）
+- 基于置信度的搜索触发策略（localConfidence < 0.5 时触发）
+- 模拟搜索 provider（基于关键词返回确定性结果）
+- 搜索结果可信度评分 + 排序
+- 加权融合策略配置（localKnowledge / webSearch / historicalFix）
+- CLI 默认启用搜索，可通过 `--no-web-search` 禁用
+
+### 2.7 任务 7: LLM Patch 生成增强 ✅
+
+**新增文件**:
+- `tests/patch-llm.test.ts` — 3 个测试用例
+
+**变更文件**:
+- `src/core/llm-service.ts` — `LlmService` 接口添加 `generatePatch`；`TemplateLlmService` / `AnthropicLlmService` / `HttpLlmService` 全部实现
+- `src/agents/patch-generator-agent.ts` — 构造函数接受可选 `llm`；缺失 `originalCode`/`modifiedCode` 时自动调用 LLM 生成 diff
+
+**实现内容**:
+- `PatchParams` / `PatchLlmResult` 类型定义
+- `TemplateLlmService.generatePatch`：基于描述自动推断修复（null safety / logger / type safety）
+- `AnthropicLlmService.generatePatch`：调用 Claude API 生成精确 original/modified 代码
+- PatchGeneratorAgent LLM 集成：优先使用 plan 中的代码，缺失时调用 LLM，失败时回退到 identity diff
+
 ---
 
 ## 3. 详细功能对照
@@ -214,6 +251,7 @@
 | `code-agent apply <plan-id>` | 应用已审核方案 | ✅ **已完成** | 非交互式应用（dry-run 支持） |
 | **`code-agent sync [repo-path]`** | **增量同步** | ✅ **新增** | 自动检测变更并增量更新 |
 | `code-agent plan <description> --budget` | Token 预算控制 | ✅ **新增** | `--budget <tokens>` 自定义预算 |
+| **`code-agent plan <description> --web-search`** | **联网搜索** | ✅ **新增** | `--web-search` / `--no-web-search` 控制 |
 | `code-agent history` | 查看历史任务 | ❌ **未实现** | 计划 Phase 5 |
 | `code-agent learn` | 学习模式 | ❌ **未实现** | 计划 Phase 5 |
 
@@ -251,7 +289,10 @@
 | `tests/propagation.test.ts` | 9 | 故障传播引擎（BFS + 概率 + 方向） |
 | `tests/token-budget.test.ts` | 15 | Token 预算（跟踪 + 降级 + 推荐） |
 | **`tests/token-estimator.test.ts`** | **9** | **模型感知 Token 估算（国产模型 + 中文自适应）** |
-| **总计** | **125** | **15 个模块** |
+| **`tests/web-search.test.ts`** | **13** | **Web 搜索引擎（查询构建 + 模拟搜索 + 策略）** |
+| **`tests/web-searcher-agent.test.ts`** | **3** | **WebSearcherAgent 集成** |
+| **`tests/patch-llm.test.ts`** | **3** | **LLM generatePatch（Template + Anthropic）** |
+| **总计** | **144** | **18 个模块** |
 
 ---
 
@@ -264,8 +305,9 @@
 | **~~正则表达式解析代码~~** | ~~无法处理多行声明、泛型、嵌套结构~~ | ✅ **已解决 — Tree-sitter 替代** |
 | **~~FaultDetector 仅为占位实现~~** | ~~无法检测真实故障，仅死代码启发式~~ | ✅ **已解决 — TemplateLlmService 提供 6 种检测模式** |
 | **~~SolutionPlanner 无 LLM 参与~~** | ~~生成通用方案，无深度根因分析~~ | ✅ **已解决 — 集成 TemplateLlmService 生成带代码的方案** |
-| LLM 为模板模拟（非真实 API） | 检测结果基于启发式模式，非语义理解 | Phase 3 接入 Anthropic API |
-| 无联网搜索 | 无法获取外部知识补充 | Phase 3 实现 |
+| LLM 为模板模拟（非真实 API） | 检测结果基于启发式模式，非语义理解 | Phase 3+ 接入真实 API（AnthropicLlmService 已就绪）|
+| **~~无联网搜索~~** | ~~无法获取外部知识补充~~ | ✅ **已解决 — WebSearchEngine + WebSearcherAgent 实现** |
+| 联网搜索为模拟 provider | 未接入真实 Web Search API（Google/Bing） | Phase 3.x 接入真实 API |
 | 无 Git 自动化 | 不执行分支/提交/推送 | Phase 4 实现 |
 | **~~无故障传播分析引擎~~** | ~~无法基于图谱计算影响范围~~ | ✅ **已解决 — PropagationEngine 实现** |
 
@@ -297,13 +339,19 @@
 9. **模型感知 Token 估算** — `ModelAwareTokenEstimator`（国产模型 + 中文自适应）
 10. **安全多 Provider 配置** — `LlmConfigResolver` + API key 脱敏 + 环境变量/用户配置分层
 11. **技术债清空** — `signaturesEqual` 深度比较 + Patch 模糊匹配 + 孤儿边清理
+12. **联网搜索模块** — `WebSearchEngine` + 4 种查询模板 + 模拟 provider
+13. **WebSearcherAgent** — 集成到 `plan()` 流程 + 记忆缓存
+14. **LLM generatePatch** — `TemplateLlmService` / `AnthropicLlmService` / `HttpLlmService` 全部实现
+15. **PatchGeneratorAgent LLM 增强** — 缺失代码时自动调用 LLM 生成 diff
+16. **CLI `--web-search`** — 默认启用，支持 `--no-web-search` 禁用
 
 ### 6.2 剩余重要工作（按优先级）
 
 | 优先级 | 任务 | 说明 | 阶段 |
 |--------|------|------|------|
-| 🟡 中 | **联网搜索模块** | Web Search API 接入 | Phase 3 |
-| 🟡 中 | **Patch 生成器增强** | LLM 生成可执行代码 diff | Phase 3 |
+| 🟡 中 | **~~联网搜索模块~~** | ~~Web Search API 接入~~ | ✅ **已完成 — 模拟 provider + CLI 集成** |
+| 🟡 中 | **~~Patch 生成器增强~~** | ~~LLM 生成可执行代码 diff~~ | ✅ **已完成 — 全 Provider 支持** |
+| 🟡 中 | **真实 Web Search API** | 接入 Google/Bing 等真实搜索 API | Phase 3.x |
 | 🟢 低 | **Git 自动化** | 分支/提交/推送/PR 创建 | Phase 4 |
 | 🟢 低 | **学习进化** | 历史任务模式提取 | Phase 5 |
 
@@ -339,21 +387,23 @@ src/
 │   ├── propagation.ts            303 行  (故障传播引擎)
 │   ├── token-budget.ts           170 行  (Token 预算管理器)
 │   ├── token-estimator.ts        100 行  (模型感知 Token 估算)    ✅ 新增
-│   └── llm-config.ts             180 行  (LLM 配置 + API key 安全)  ✅ 新增
+│   ├── llm-config.ts             180 行  (LLM 配置 + API key 安全)  ✅ 新增
+│   └── **web-search.ts**         **180 行**  (**Web 搜索引擎 + 查询构建 + 模拟 provider**)  ✅ **新增**
 ├── agents/
 │   ├── base-agent.ts              47 行  (Agent 基类)
-│   ├── patch-generator-agent.ts   53 行  (Patch 生成)
-│   ├── solution-planner-agent.ts  70 行  (LLM 增强方案规划)
+│   ├── patch-generator-agent.ts   75 行  (Patch 生成 + **LLM 增强**)   ✅ **修改**
+│   ├── solution-planner-agent.ts  85 行  (LLM 增强方案规划 + **搜索集成**) ✅ **修改**
 │   ├── fault-detector-agent.ts    96 行  (LLM 增强故障检测)
 │   ├── repo-scanner-agent.ts      39 行  (扫描 Agent)
-│   └── context-builder-agent.ts   55 行  (上下文构建 + 传播集成)   ✅ 修改
+│   ├── context-builder-agent.ts   55 行  (上下文构建 + 传播集成)   ✅ 修改
+│   └── **web-searcher-agent.ts**  **65 行**  (**Web 搜索 Agent**)           ✅ **新增**
 ├── interface/
 │   └── cli-review.ts              61 行  (Review UI)
 └── utils/
     ├── logger.ts                  36 行  (日志)
     └── hash.ts                     5 行  (哈希)
 
-总计: ~3,050 行代码 + 125 个测试（15 个测试文件）
+总计: ~3,500 行代码 + **144** 个测试（**18** 个测试文件）
 ```
 
 ---
