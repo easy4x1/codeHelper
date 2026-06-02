@@ -145,6 +145,7 @@ export interface TaskContext {
   analyzedFiles: Set<string>;
   recalledNodes: GraphNode[];
   findings: Finding[];
+  searchCache?: Array<{ title: string; url: string; snippet: string; credibilityScore: number }>;
 }
 
 export interface Finding {
@@ -288,6 +289,58 @@ export interface PropagationResult {
 }
 
 // ============================================
+// Web Search Types
+// ============================================
+
+export interface SearchTemplate {
+  name: string;
+  template: string;
+  priority: number;
+  example: string;
+}
+
+export interface WebSearchQuery {
+  query: string;
+  templates: string[];
+  language?: string;
+  framework?: string;
+  errorMessage?: string;
+  stackTraceTopFrame?: string;
+}
+
+export interface WebSearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+  source: string;
+  credibilityScore: number; // 0-1
+}
+
+export interface WebSearchStrategy {
+  triggers: {
+    localConfidenceThreshold: number;
+    noveltyThreshold: number;
+    minQueryQuality: number;
+  };
+  queryBuilder: {
+    templates: SearchTemplate[];
+    enrichment: {
+      includeStackTrace: boolean;
+      includeVersions: boolean;
+      includeContext: boolean;
+    };
+  };
+  fusion: {
+    strategy: 'weighted' | 'fallback' | 'ensemble';
+    weights: {
+      localKnowledge: number;
+      webSearch: number;
+      historicalFix: number;
+    };
+  };
+}
+
+// ============================================
 // Token Budget Types
 // ============================================
 
@@ -370,10 +423,23 @@ export const solutionPlannerContextSchema = z.object({
   findings: z.array(findingSchema).optional().default([]),
   affectedFiles: z.array(z.string()).optional().default([]),
   repoPath: z.string().optional().default('.'),
+  searchResults: z.array(z.object({
+    title: z.string(),
+    snippet: z.string(),
+    credibility: z.number(),
+  })).optional().default([]),
 });
 
 export const patchGeneratorContextSchema = z.object({
   plan: z.record(z.string(), z.unknown()),
+});
+
+export const webSearcherContextSchema = z.object({
+  findings: z.array(findingSchema).optional().default([]),
+  language: z.string().optional().default('typescript'),
+  framework: z.string().optional(),
+  errorMessage: z.string().optional(),
+  stackTrace: z.string().optional(),
 });
 
 /**
