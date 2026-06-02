@@ -73,10 +73,174 @@ export function buildQuery(
   return { query, templates: usedTemplates, language: params.language, framework: params.framework };
 }
 
-/**
- * Simulation provider for testing and MVP.
- * Returns deterministic results based on query keywords.
- */
+// ============================================
+// Search Provider Interface
+// ============================================
+
+export interface SearchProvider {
+  search(query: string): Promise<WebSearchResult[]>;
+}
+
+// ============================================
+// DuckDuckGo Search Provider
+// ============================================
+
+export class DuckDuckGoSearchProvider implements SearchProvider {
+  private readonly userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.0';
+
+  async search(query: string): Promise<WebSearchResult[]> {
+    if (!query.trim()) return [];
+
+    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+
+    try {
+      logger.info(`DuckDuckGo search: "${query}"`);
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': this.userAgent,
+          'Accept': 'text/html',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+      });
+
+      if (!response.ok) {
+        logger.warn(`DuckDuckGo returned ${response.status}, falling back to simulation`);
+        return [];
+      }
+
+      const html = await response.text();
+      return this.parseResults(html, query);
+    } catch (err) {
+      logger.error('DuckDuckGo search failed:', err);
+      return [];
+    }
+  }
+
+  private parseResults(html: string, query: string): WebSearchResult[] {
+    const results: WebSearchResult[] = [];
+
+    // DuckDuckGo HTML result structure:
+    // <div class="result results_links results_links_deep web-result">
+    //   <h2 class="result__title"><a class="result__a" href="...">Title</a></h2>
+    //   <a class="result__url" href="...">url...</a>
+    //   <div class="result__snippet">Snippet...</div>
+    // </div>
+
+    const resultBlocks = html.split(/<div class="result[^"]*"/).slice(1);
+
+    for (const block of resultBlocks) {
+      const titleMatch = block.match(/<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/i);
+      const snippetMatch = block.match(/<div[^>]*class="result__snippet"[^>]*>(.*?)<\/div>/i);
+      const urlMatch = block.match(/<a[^>]*class="result__url"[^>]*href="([^"]*)"[^>]*>/i);
+
+      if (titleMatch) {
+        const title = this.stripHtml(titleMatch[2]);
+        const rawHref = this.decodeEntities(titleMatch[1]);
+        const snippet = snippetMatch ? this.stripHtml(snippetMatch[1]) : '';
+        const rawDisplayUrl = urlMatch ? this.decodeEntities(urlMatch[1]) : rawHref;
+
+        // Resolve DuckDuckGo redirect URLs to actual URLs
+        const href = this.resolveRedirectUrl(rawHref);
+        const displayUrl = this.resolveRedirectUrl(rawDisplayUrl);
+
+        // Skip ads and irrelevant results
+        if (this.isRelevant(title, snippet, query)) {
+          results.push({
+            title,
+            url: displayUrl || href,
+            snippet: snippet || title,
+            source: this.extractSource(href),
+            credibilityScore: this.scoreSource(href),
+          });
+        }
+      }
+    }
+
+    logger.info(`DuckDuckGo returned ${results.length} result(s) for "${query}"`);
+    return results.slice(0, 5); // Limit to top 5
+  }
+
+  private resolveRedirectUrl(url: string): string {
+    // DuckDuckGo wraps external URLs in /l/?uddg=... redirects
+    if (url.startsWith('/l/?uddg=') || url.includes('?uddg=')) {
+      const match = url.match(/uddg=([^&]+)/);
+      if (match) {
+        try {
+          return decodeURIComponent(match[1]);
+        } catch {
+          return match[1];
+        }
+      }
+    }
+    return url;
+  }
+
+  private stripHtml(html: string): string {
+    return html
+      .replace(/<[^>]+>/g, '')
+      .replace(/&quot;/g, '"')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&#x27;/g, "'")
+      .replace(/&nbsp;/g, ' ')
+      .trim();
+  }
+
+  private decodeEntities(str: string): string {
+    return str
+      .replace(/&quot;/g, '"')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&#x27;/g, "'")
+      .replace(/&#39;/g, "'")
+      .replace(/&nbsp;/g, ' ');
+  }
+
+  private isRelevant(title: string, snippet: string, query: string): boolean {
+    const q = query.toLowerCase();
+    const text = (title + ' ' + snippet).toLowerCase();
+    // Require at least some keyword overlap
+    const queryWords = q.split(/\s+/).filter(w => w.length > 2);
+    const matches = queryWords.filter(w => text.includes(w)).length;
+    return matches > 0 || text.includes('stackoverflow') || text.includes('github');
+  }
+
+  private extractSource(url: string): string {
+    try {
+      const hostname = new URL(url).hostname;
+      if (hostname.includes('stackoverflow')) return 'stackoverflow';
+      if (hostname.includes('github')) return 'github';
+      if (hostname.includes('developer.mozilla')) return 'mdn';
+      if (hostname.includes('react.dev')) return 'react-docs';
+      if (hostname.includes('medium')) return 'medium';
+      return hostname.replace(/^www\./, '');
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  private scoreSource(url: string): number {
+    const source = this.extractSource(url);
+    const scores: Record<string, number> = {
+      'stackoverflow': 0.95,
+      'mdn': 0.95,
+      'react-docs': 0.92,
+      'github': 0.88,
+      'typescriptlang': 0.90,
+      'javascript.info': 0.85,
+      'dev.to': 0.75,
+      'medium': 0.70,
+    };
+    return scores[source] ?? 0.60;
+  }
+}
+
+// ============================================
+// Simulation Provider (fallback / testing)
+// ============================================
+
 export async function simulateSearch(query: WebSearchQuery): Promise<WebSearchResult[]> {
   if (!query.query.trim()) return [];
 
@@ -138,10 +302,18 @@ export async function simulateSearch(query: WebSearchQuery): Promise<WebSearchRe
   return results.sort((a, b) => b.credibilityScore - a.credibilityScore);
 }
 
+// ============================================
+// Web Search Engine
+// ============================================
+
 export class WebSearchEngine {
   private strategy: WebSearchStrategy;
+  private provider: SearchProvider;
 
-  constructor(strategy?: Partial<WebSearchStrategy>) {
+  constructor(
+    strategy?: Partial<WebSearchStrategy>,
+    provider?: SearchProvider,
+  ) {
     this.strategy = {
       triggers: {
         localConfidenceThreshold: 0.5,
@@ -160,6 +332,7 @@ export class WebSearchEngine {
         ...strategy?.fusion,
       },
     };
+    this.provider = provider ?? new DuckDuckGoSearchProvider();
   }
 
   shouldSearch(context: { localConfidence: number; findingCount: number }): boolean {
@@ -192,6 +365,15 @@ export class WebSearchEngine {
     }
 
     logger.info(`Web search query: "${query.query}" (templates: ${query.templates.join(', ')})`);
+
+    // Try the configured provider first
+    const providerResults = await this.provider.search(query.query);
+    if (providerResults.length > 0) {
+      return providerResults;
+    }
+
+    // Fallback to simulation if provider returns nothing
+    logger.info('Provider returned no results, falling back to simulation');
     return simulateSearch(query);
   }
 }
