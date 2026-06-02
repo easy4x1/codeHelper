@@ -3,7 +3,10 @@ import { RepoScannerAgent } from '../src/agents/repo-scanner-agent.js';
 import { FaultDetectorAgent } from '../src/agents/fault-detector-agent.js';
 import { ContextBuilderAgent } from '../src/agents/context-builder-agent.js';
 import { SolutionPlannerAgent } from '../src/agents/solution-planner-agent.js';
+import { PatchGeneratorAgent } from '../src/agents/patch-generator-agent.js';
 import { MemoryMiddleware } from '../src/core/memory.js';
+import { computeFingerprint } from '../src/core/fingerprint.js';
+import { KnowledgeGraphBuilder } from '../src/core/knowledge-graph.js';
 import type { AgentInput, KnowledgeGraph, GraphNode } from '../src/core/types.js';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
@@ -100,5 +103,55 @@ describe('SolutionPlannerAgent', () => {
     expect(output.result.plan).toBeDefined();
     expect(output.result.plan).toHaveProperty('id');
     expect(output.result.plan).toHaveProperty('changes');
+  });
+});
+
+describe('PatchGeneratorAgent', () => {
+  it('generates patches from a solution plan', async () => {
+    const memory = new MemoryMiddleware();
+
+    // Set up a file in memory that the agent can read
+    const testContent = 'function helper() {\n  return "hello";\n}\n';
+
+    // Store fingerprint so the agent knows the file exists
+    const fp = computeFingerprint('src/utils.ts', testContent);
+    memory.setFingerprint(fp);
+
+    // Build graph with the file node
+    const builder = new KnowledgeGraphBuilder();
+    builder.addNode({ id: 'file:src/utils.ts', type: 'file', name: 'utils.ts', filePath: 'src/utils.ts' });
+    memory.setKnowledgeGraph(builder.build());
+
+    const agent = new PatchGeneratorAgent(memory);
+    const input: AgentInput = {
+      taskId: 'task-1',
+      instruction: 'Generate patches',
+      context: {
+        plan: {
+          id: 'plan-1',
+          timestamp: new Date().toISOString(),
+          taskId: 'task-1',
+          problem: { description: 'Fix greeting', rootCause: 'Wrong text', severity: 'minor' },
+          changes: [
+            {
+              filePath: 'src/utils.ts',
+              changeType: 'modify',
+              description: 'Fix greeting text',
+              reasoning: 'Should say world',
+              originalCode: 'function helper() {\n  return "hello";\n}',
+              modifiedCode: 'function helper() {\n  return "hello world";\n}',
+            },
+          ],
+          metadata: { confidence: 0.9, tokenUsed: 0 },
+        },
+      },
+    };
+
+    const output = await agent.run(input);
+    expect(output.result.patches).toBeDefined();
+    expect(Array.isArray(output.result.patches)).toBe(true);
+    expect(output.result.patches).toHaveLength(1);
+    expect(output.result.patches[0].filePath).toBe('src/utils.ts');
+    expect(output.result.patches[0].changeType).toBe('modify');
   });
 });
