@@ -1,7 +1,8 @@
-import type { KnowledgeGraphBuilder, GraphEdge, GraphNode } from './knowledge-graph.js';
+import type { KnowledgeGraphBuilder } from './knowledge-graph.js';
 import type {
   PropagationOptions, PropagationResult, AffectedNode,
   RootCauseCandidate, PropagationPath, EdgeType,
+  GraphEdge, GraphNode,
 } from './types.js';
 
 export interface PropagationRule {
@@ -234,7 +235,7 @@ export class PropagationEngine {
     if (direction === 'upstream' || direction === 'both') {
       // Incoming edges: traverse reverse (target -> source) if fault in target affects source
       for (const edge of incoming) {
-        const rule = PROPAGATION_RULES[edge.type];
+        const rule = PROPAGATION_RULES[edge.type as EdgeType];
         if (rule.propagateFromTarget) {
           addEdge(edge);
         }
@@ -251,7 +252,7 @@ export class PropagationEngine {
     if (direction === 'upstream') {
       // Outgoing edges: traverse natural direction if fault in source affects target
       for (const edge of outgoing) {
-        const rule = PROPAGATION_RULES[edge.type];
+        const rule = PROPAGATION_RULES[edge.type as EdgeType];
         if (rule.propagateFromSource) {
           addEdge(edge);
         }
