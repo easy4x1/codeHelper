@@ -81,6 +81,25 @@ export class MemoryMiddleware {
     };
   }
 
+  // ---- Search cache (L2) ----
+
+  recordSearchResult(taskId: string, result: { title: string; url: string; snippet: string; credibilityScore: number }): void {
+    if (this.taskContext.taskId !== taskId) {
+      this.startTask(taskId);
+    }
+    if (!this.taskContext.searchCache) {
+      this.taskContext.searchCache = [];
+    }
+    this.taskContext.searchCache.push(result);
+  }
+
+  getCachedSearchResults(taskId: string): Array<{ title: string; url: string; snippet: string; credibilityScore: number }> {
+    if (this.taskContext.taskId !== taskId) {
+      return [];
+    }
+    return this.taskContext.searchCache ? [...this.taskContext.searchCache] : [];
+  }
+
   getTaskContext(): TaskContext {
     return {
       ...this.taskContext,
