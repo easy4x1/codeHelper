@@ -11,6 +11,7 @@ const logger = createLogger('llm-service');
 export interface LlmService {
   analyzeFault(params: FaultAnalysisParams): Promise<FaultAnalysisResult>;
   generateSolution(params: SolutionParams): Promise<SolutionResult>;
+  generatePatch(params: PatchParams): Promise<PatchLlmResult>;
 }
 
 export interface FaultAnalysisParams {
@@ -56,6 +57,20 @@ export interface SolutionResult {
     modifiedCode?: string;
   }>;
   confidence: number;
+}
+
+export interface PatchParams {
+  filePath: string;
+  description: string;
+  reasoning: string;
+  originalCode?: string;
+  modifiedCode?: string;
+}
+
+export interface PatchLlmResult {
+  originalCode: string;
+  modifiedCode: string;
+  changeType: 'modify' | 'add' | 'delete';
 }
 
 /**
@@ -263,6 +278,88 @@ export class TemplateLlmService implements LlmService {
     };
   }
 
+  async generatePatch(params: PatchParams): Promise<PatchLlmResult> {
+    logger.info(`Generating patch for ${params.filePath}`);
+
+    const { originalCode, modifiedCode } = params;
+
+    // If both original and modified are provided, return as-is
+    if (originalCode !== undefined && modifiedCode !== undefined) {
+      const changeType: PatchLlmResult['changeType'] =
+        originalCode === '' ? 'add' :
+        modifiedCode === '' ? 'delete' :
+        'modify';
+      return { originalCode, modifiedCode, changeType };
+    }
+
+    // If only original is provided, try to infer the fix
+    if (originalCode !== undefined && modifiedCode === undefined) {
+      const inferred = this.inferPatch(originalCode, params.description);
+      return {
+        originalCode,
+        modifiedCode: inferred,
+        changeType: inferred === '' ? 'delete' : 'modify',
+      };
+    }
+
+    // If no original, generate new code
+    if (originalCode === undefined) {
+      const generated = this.generateNewCode(params.description, params.reasoning);
+      return {
+        originalCode: '',
+        modifiedCode: generated,
+        changeType: 'add',
+      };
+    }
+
+    // Fallback
+    return {
+      originalCode: originalCode || '',
+      modifiedCode: modifiedCode || '',
+      changeType: 'modify',
+    };
+  }
+
+  private inferPatch(originalCode: string, description: string): string {
+    const desc = description.toLowerCase();
+    let modified = originalCode;
+
+    // Null safety inference
+    if (desc.includes('null') || desc.includes('undefined')) {
+      modified = modified.replace(/(\w+)\.(\w+)\(/g, (match, obj, method) => {
+        if (['console', 'process', 'Math', 'JSON'].includes(obj)) return match;
+        return `${obj}?.${method}(`;
+      });
+    }
+
+    // Logger replacement inference
+    if (desc.includes('console') || desc.includes('log')) {
+      modified = modified.replace(/console\.(log|error|warn)\(/g, 'logger.info(');
+    }
+
+    // Type safety inference
+    if (desc.includes('any') || desc.includes('type')) {
+      modified = modified.replace(/:\s*any\b/g, ': unknown');
+      modified = modified.replace(/\bas any\b/g, 'as unknown');
+    }
+
+    return modified;
+  }
+
+  private generateNewCode(description: string, _reasoning: string): string {
+    const desc = description.toLowerCase();
+
+    if (desc.includes('utility') || desc.includes('helper')) {
+      return `// TODO: Implement ${description}\nexport function newUtility() {\n  throw new Error('Not implemented');\n}`;
+    }
+
+    if (desc.includes('error handling') || desc.includes('catch')) {
+      return `try {\n  // TODO: Add operation\n} catch (error) {\n  logger.error('Operation failed:', error);\n  throw error;\n}`;
+    }
+
+    return `// TODO: ${description}\n`;
+  }
+
   private suggestNullSafety(code: string): string {
     // Simple transformation: a.b() -> a?.b()
     return code.replace(/(\w+)\.(\w+)\(/g, (match, obj, method) => {
@@ -443,6 +540,47 @@ Respond ONLY with a JSON object in this exact format (no markdown, no explanatio
       return this.fallback.generateSolution(params);
     }
   }
+
+  async generatePatch(params: PatchParams): Promise<PatchLlmResult> {
+    if (!this.client) {
+      logger.info('Anthropic client not available — using template fallback for generatePatch');
+      return this.fallback.generatePatch(params);
+    }
+
+    try {
+      const prompt = `You are a code patching expert. Based on the description, generate the exact original and modified code.
+
+File: ${params.filePath}
+Description: ${params.description}
+Reasoning: ${params.reasoning}
+${params.originalCode ? `Original code:\n\`\`\`\n${params.originalCode}\n\`\`\`` : 'This is a new file.'}
+
+Respond ONLY with a JSON object in this exact format (no markdown, no explanation):
+{
+  "originalCode": "the exact original code (empty string for new files)",
+  "modifiedCode": "the exact replacement code",
+  "changeType": "modify" | "add" | "delete"
+}`;
+
+      const response = await this.client.messages.create({
+        model: this.model,
+        max_tokens: 2048,
+        messages: [{ role: 'user', content: prompt }],
+      });
+
+      const content = response.content[0];
+      if (content.type !== 'text') {
+        throw new Error('Unexpected response type from Claude');
+      }
+
+      const parsed = JSON.parse(content.text) as PatchLlmResult;
+      logger.info(`Claude generated patch for ${params.filePath} (${parsed.changeType})`);
+      return parsed;
+    } catch (err) {
+      logger.error('Claude generatePatch failed, using fallback:', err);
+      return this.fallback.generatePatch(params);
+    }
+  }
 }
 
 // ============================================
@@ -499,6 +637,19 @@ export class HttpLlmService implements LlmService {
     } catch (err) {
       logger.error(`${this.config.provider} generateSolution failed, using fallback:`, err);
       return this.fallback.generateSolution(params);
+    }
+  }
+
+  async generatePatch(params: PatchParams): Promise<PatchLlmResult> {
+    if (!this.config.apiKey || !this.baseUrl) {
+      logger.info(`${this.config.provider} not configured — using template fallback`);
+      return this.fallback.generatePatch(params);
+    }
+    try {
+      return await this.callApi('generatePatch', params);
+    } catch (err) {
+      logger.error(`${this.config.provider} generatePatch failed, using fallback:`, err);
+      return this.fallback.generatePatch(params);
     }
   }
 
