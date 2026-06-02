@@ -129,3 +129,15 @@ describe('CodeRepairAgent token budget', () => {
     ).rejects.toThrow('Token budget exceeded');
   });
 });
+
+describe('CLI --budget option', () => {
+  it('accepts custom budget via CLI', async () => {
+    const agent = new CodeRepairAgent({
+      tokenBudget: { total: 5000, analysis: 2000, planning: 1500 },
+    });
+    await agent.init(fixturePath);
+
+    const status = agent.getBudgetManager().getStatus();
+    expect(status.total).toBe(5000);
+  });
+});

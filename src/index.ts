@@ -239,10 +239,22 @@ async function main(): Promise<void> {
     .option('-r, --repo <path>', 'Repository path', '.')
     .option('--file <file>', 'Target file(s)', collect, [])
     .option('--llm <provider>', 'LLM provider: anthropic | template', 'template')
-    .action(async (description: string, options: { repo: string; file: string[]; llm: string }) => {
+    .option('--budget <tokens>', 'Total token budget', '50000')
+    .action(async (description: string, options: { repo: string; file: string[]; llm: string; budget: string }) => {
       try {
         const llmService = options.llm === 'anthropic' ? 'anthropic' as const : 'template' as const;
-        const agent = new CodeRepairAgent({ verbose: true, llmService });
+        const total = parseInt(options.budget, 10);
+        const agent = new CodeRepairAgent({
+          verbose: true,
+          llmService,
+          tokenBudget: {
+            total,
+            analysis: Math.floor(total * 0.4),
+            planning: Math.floor(total * 0.3),
+            search: Math.floor(total * 0.2),
+            review: Math.floor(total * 0.1),
+          },
+        });
         const memoryPath = join(resolve(options.repo), '.repair-agent', 'memory.json');
         await agent.loadMemory(memoryPath);
 
@@ -371,10 +383,22 @@ async function main(): Promise<void> {
     .option('--file <file>', 'Target file(s)', (val: string, prev: string[]) => prev.concat([val]), [])
     .option('--auto-push', 'Automatically apply without confirmation', false)
     .option('--llm <provider>', 'LLM provider: anthropic | template', 'template')
-    .action(async (description: string, options: { repo: string; file: string[]; autoPush: boolean; llm: string }) => {
+    .option('--budget <tokens>', 'Total token budget', '50000')
+    .action(async (description: string, options: { repo: string; file: string[]; autoPush: boolean; llm: string; budget: string }) => {
       try {
         const llmService = options.llm === 'anthropic' ? 'anthropic' as const : 'template' as const;
-        const agent = new CodeRepairAgent({ verbose: true, llmService });
+        const total = parseInt(options.budget, 10);
+        const agent = new CodeRepairAgent({
+          verbose: true,
+          llmService,
+          tokenBudget: {
+            total,
+            analysis: Math.floor(total * 0.4),
+            planning: Math.floor(total * 0.3),
+            search: Math.floor(total * 0.2),
+            review: Math.floor(total * 0.1),
+          },
+        });
         const memoryPath = join(resolve(options.repo), '.repair-agent', 'memory.json');
         await agent.loadMemory(memoryPath);
 
