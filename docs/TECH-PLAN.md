@@ -3,6 +3,10 @@
 > 实施层面技术规划，指导从设计到代码的落地过程
 > 版本: v1.0.0
 > 日期: 2026-05-29
+>
+> **Update (2026-06-02)**: 部分选型在实施中调整，详见备注。
+> - LLM 调用：未引入 Vercel AI SDK，改用各 Provider 原生 SDK + 通用 HttpLlmService
+> - 其余选型（commander / tree-sitter / zod / vitest）按规划落地
 
 ---
 
