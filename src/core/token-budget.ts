@@ -4,6 +4,7 @@ import type {
   DegradationLevel,
   BudgetRecommendations,
 } from './types.js';
+import { createLogger } from '../utils/logger.js';
 
 export const DEFAULT_CONFIG: TokenBudgetConfig = {
   total: 50000,
@@ -35,6 +36,7 @@ export class TokenBudgetManager {
     planning: number;
     review: number;
   };
+  private logger = createLogger('token-budget');
 
   constructor(config?: TokenBudgetConfig) {
     this.config = config ?? DEFAULT_CONFIG;
@@ -48,7 +50,16 @@ export class TokenBudgetManager {
 
   recordUsage(category: keyof TokenBudgetConfig['allocated'], tokens: number): void {
     const safeTokens = Math.max(0, tokens);
-    this.usageByCategory[category] += safeTokens;
+    const newUsage = this.usageByCategory[category] + safeTokens;
+    const limit = this.config.allocated[category];
+
+    if (newUsage > limit) {
+      this.logger.warn(
+        `${category} token usage (${newUsage}) exceeds allocated limit (${limit})`
+      );
+    }
+
+    this.usageByCategory[category] = newUsage;
   }
 
   getStatus(): TokenBudgetStatus {

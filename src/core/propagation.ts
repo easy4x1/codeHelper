@@ -105,10 +105,7 @@ export const PROPAGATION_RULES: Record<EdgeType, PropagationRule> = {
 
 function isTestFile(node: GraphNode): boolean {
   if (!node.filePath) return false;
-  return node.filePath.endsWith('.test.ts') ||
-    node.filePath.endsWith('.test.js') ||
-    node.filePath.endsWith('.spec.ts') ||
-    node.filePath.endsWith('.spec.js');
+  return /\.(test|spec)\./.test(node.filePath);
 }
 
 export class PropagationEngine {
@@ -223,19 +220,13 @@ export class PropagationEngine {
       }
     };
 
-    // Access private indexes via type assertion since they are private
-    const builder = this.graphBuilder as unknown as {
-      ['edgesBySource']: Map<string, GraphEdge[]>;
-      ['edgesByTarget']: Map<string, GraphEdge[]>;
-    };
-
-    const outgoing = builder.edgesBySource.get(nodeId) ?? [];
-    const incoming = builder.edgesByTarget.get(nodeId) ?? [];
+    const outgoing = this.graphBuilder.getEdgesBySource(nodeId);
+    const incoming = this.graphBuilder.getEdgesByTarget(nodeId);
 
     if (direction === 'upstream' || direction === 'both') {
       // Incoming edges: traverse reverse (target -> source) if fault in target affects source
       for (const edge of incoming) {
-        const rule = PROPAGATION_RULES[edge.type as EdgeType];
+        const rule = PROPAGATION_RULES[edge.type];
         if (rule.propagateFromTarget) {
           addEdge(edge);
         }
@@ -252,7 +243,7 @@ export class PropagationEngine {
     if (direction === 'upstream') {
       // Outgoing edges: traverse natural direction if fault in source affects target
       for (const edge of outgoing) {
-        const rule = PROPAGATION_RULES[edge.type as EdgeType];
+        const rule = PROPAGATION_RULES[edge.type];
         if (rule.propagateFromSource) {
           addEdge(edge);
         }
