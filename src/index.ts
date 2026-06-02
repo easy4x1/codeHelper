@@ -3,6 +3,7 @@
 import { Command } from 'commander';
 import { MemoryMiddleware } from './core/memory.js';
 import { RepoScannerAgent } from './agents/repo-scanner-agent.js';
+import { buildImportMap } from './core/repo-scanner.js';
 import { FaultDetectorAgent } from './agents/fault-detector-agent.js';
 import { ContextBuilderAgent } from './agents/context-builder-agent.js';
 import { SolutionPlannerAgent } from './agents/solution-planner-agent.js';
@@ -14,22 +15,55 @@ import { createLogger } from './utils/logger.js';
 import type { RepairTask, SolutionPlan } from './core/types.js';
 import { PatchGeneratorAgent } from './agents/patch-generator-agent.js';
 import { applyPatch, type FilePatch, type PatchResult } from './core/patch.js';
+import { syncRepo } from './core/sync.js';
 import { formatDiff, formatPatchResult, createReviewPrompt } from './interface/cli-review.js';
 import { createInterface } from 'readline';
+import { AnthropicLlmService, TemplateLlmService, type LlmService } from './core/llm-service.js';
+import { TokenBudgetManager } from './core/token-budget.js';
 
 export interface AgentConfig {
   verbose?: boolean;
   memoryPath?: string;
+  llmService?: 'anthropic' | 'template';
+  tokenBudget?: {
+    total?: number;
+    analysis?: number;
+    search?: number;
+    planning?: number;
+    review?: number;
+  };
 }
 
 export class CodeRepairAgent {
   private memory: MemoryMiddleware;
   private config: AgentConfig;
   private logger = createLogger('code-repair-agent');
+  private llmService: LlmService;
+  private budgetManager: TokenBudgetManager;
 
   constructor(config: AgentConfig = {}) {
     this.config = config;
     this.memory = new MemoryMiddleware();
+    this.llmService = config.llmService === 'anthropic'
+      ? new AnthropicLlmService()
+      : new TemplateLlmService();
+    this.budgetManager = new TokenBudgetManager(
+      config.tokenBudget
+        ? {
+            total: config.tokenBudget.total ?? 50000,
+            allocated: {
+              analysis: config.tokenBudget.analysis ?? 20000,
+              search: config.tokenBudget.search ?? 10000,
+              planning: config.tokenBudget.planning ?? 15000,
+              review: config.tokenBudget.review ?? 5000,
+            },
+          }
+        : undefined
+    );
+  }
+
+  getBudgetManager(): TokenBudgetManager {
+    return this.budgetManager;
   }
 
   async init(repoPath: string): Promise<{ files: string[]; fingerprintCount: number }> {
@@ -73,7 +107,15 @@ export class CodeRepairAgent {
   }
 
   async plan(task: RepairTask): Promise<SolutionPlan> {
-    const detector = new FaultDetectorAgent(this.memory);
+    const recommendations = this.budgetManager.getRecommendations();
+    if (!recommendations.shouldProceed) {
+      throw new Error('Token budget exceeded: ' + recommendations.message);
+    }
+
+    const status = this.budgetManager.getStatus();
+    this.logger.info(`Token budget: ${status.remaining} tokens remaining`);
+
+    const detector = new FaultDetectorAgent(this.memory, this.llmService);
     const detectorResult = await detector.run({
       taskId: task.id,
       instruction: task.description,
@@ -81,6 +123,9 @@ export class CodeRepairAgent {
     });
 
     const findings = detectorResult.findings;
+
+    const analysisTokens = TokenBudgetManager.estimateTokens(JSON.stringify(detectorResult.findings));
+    this.budgetManager.recordUsage('analysis', analysisTokens);
 
     if (findings.length > 0) {
       const nodeIds = findings.flatMap(f => f.nodeIds);
@@ -92,7 +137,7 @@ export class CodeRepairAgent {
       });
     }
 
-    const planner = new SolutionPlannerAgent(this.memory);
+    const planner = new SolutionPlannerAgent(this.memory, this.llmService);
     const plannerResult = await planner.run({
       taskId: task.id,
       instruction: task.description,
@@ -102,6 +147,14 @@ export class CodeRepairAgent {
         affectedFiles: task.context?.files || [],
       },
     });
+
+    const planningTokens = TokenBudgetManager.estimateTokens(JSON.stringify(plannerResult.result));
+    this.budgetManager.recordUsage('planning', planningTokens);
+
+    const degradation = this.budgetManager.checkDegradation();
+    if (degradation.level !== 'none') {
+      this.logger.warn(`Token budget degradation: ${degradation.level} — ${degradation.message}`);
+    }
 
     return plannerResult.result.plan as SolutionPlan;
   }
@@ -185,9 +238,11 @@ async function main(): Promise<void> {
     .argument('<description>', 'Problem description')
     .option('-r, --repo <path>', 'Repository path', '.')
     .option('--file <file>', 'Target file(s)', collect, [])
-    .action(async (description: string, options: { repo: string; file: string[] }) => {
+    .option('--llm <provider>', 'LLM provider: anthropic | template', 'template')
+    .action(async (description: string, options: { repo: string; file: string[]; llm: string }) => {
       try {
-        const agent = new CodeRepairAgent({ verbose: true });
+        const llmService = options.llm === 'anthropic' ? 'anthropic' as const : 'template' as const;
+        const agent = new CodeRepairAgent({ verbose: true, llmService });
         const memoryPath = join(resolve(options.repo), '.repair-agent', 'memory.json');
         await agent.loadMemory(memoryPath);
 
@@ -239,6 +294,55 @@ async function main(): Promise<void> {
     });
 
   program
+    .command('sync')
+    .description('Incremental sync: update knowledge graph based on file changes')
+    .argument('[repo-path]', 'Path to repository', '.')
+    .option('--force-full', 'Force full re-analysis of all files', false)
+    .action(async (repoPath: string, options: { forceFull: boolean }) => {
+      try {
+        const agent = new CodeRepairAgent({ verbose: true });
+        const memoryPath = join(resolve(repoPath), '.repair-agent', 'memory.json');
+        await agent.loadMemory(memoryPath);
+
+        const result = await syncRepo(agent.getMemory(), {
+          repoPath: resolve(repoPath),
+          forceFull: options.forceFull,
+        });
+
+        // Update memory with sync results
+        const memory = agent.getMemory();
+        const repoMemory = memory.getRepoMemory();
+        repoMemory.knowledgeGraph = result.updatedGraph;
+        repoMemory.fingerprints = result.updatedFingerprints;
+        repoMemory.importMap = buildImportMap(Object.values(result.updatedFingerprints));
+        memory.setRepoMemory(repoMemory);
+
+        await agent.saveMemory(memoryPath);
+
+        console.log('\n=== Sync Complete ===');
+        console.log(`Files analyzed: ${result.filesAnalyzed}`);
+        console.log(`  Unchanged:  ${result.filesUnchanged}`);
+        console.log(`  Cosmetic:   ${result.filesCosmetic}`);
+        console.log(`  Structural: ${result.filesStructural}`);
+        console.log(`  Added:      ${result.filesAdded}`);
+        console.log(`  Deleted:    ${result.filesDeleted}`);
+
+        if (result.changes.length > 0) {
+          console.log('\nChanges:');
+          for (const change of result.changes) {
+            const icon = change.changeLevel === 'NONE' ? '✓' :
+              change.changeLevel === 'COSMETIC' ? '○' :
+              change.changeLevel === 'STRUCTURAL' ? '△' : '?';
+            console.log(`  ${icon} ${change.filePath} (${change.changeLevel})`);
+          }
+        }
+      } catch (err) {
+        console.error(err);
+        process.exit(1);
+      }
+    });
+
+  program
     .command('apply')
     .description('Apply a solution plan (non-interactive)')
     .argument('<plan-id>', 'Plan ID or plan JSON file')
@@ -266,9 +370,11 @@ async function main(): Promise<void> {
     .option('-r, --repo <path>', 'Repository path', '.')
     .option('--file <file>', 'Target file(s)', (val: string, prev: string[]) => prev.concat([val]), [])
     .option('--auto-push', 'Automatically apply without confirmation', false)
-    .action(async (description: string, options: { repo: string; file: string[]; autoPush: boolean }) => {
+    .option('--llm <provider>', 'LLM provider: anthropic | template', 'template')
+    .action(async (description: string, options: { repo: string; file: string[]; autoPush: boolean; llm: string }) => {
       try {
-        const agent = new CodeRepairAgent({ verbose: true });
+        const llmService = options.llm === 'anthropic' ? 'anthropic' as const : 'template' as const;
+        const agent = new CodeRepairAgent({ verbose: true, llmService });
         const memoryPath = join(resolve(options.repo), '.repair-agent', 'memory.json');
         await agent.loadMemory(memoryPath);
 

@@ -16,10 +16,7 @@ export class ContextBuilderAgent extends BaseAgent {
     const builder = KnowledgeGraphBuilder.fromGraph(graph);
     const engine = new PropagationEngine(builder);
 
-    const maxDepth =
-      typeof input.context.maxPropagationDepth === 'number'
-        ? input.context.maxPropagationDepth
-        : 3;
+    const maxDepth = (input.context.maxPropagationDepth as number | undefined) ?? 3;
 
     const traceResult = engine.trace(nodeIds, {
       direction: 'both',
