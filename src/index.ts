@@ -23,6 +23,8 @@ import { createLlmService, type LlmService } from './core/llm-service.js';
 import { TokenBudgetManager } from './core/token-budget.js';
 import { LlmConfigResolver } from './core/llm-config.js';
 import { ModelAwareTokenEstimator } from './core/token-estimator.js';
+import { GitExecutorAgent } from './agents/git-executor-agent.js';
+import type { GitExecutionConfig } from './core/git-executor.js';
 
 export interface AgentConfig {
   verbose?: boolean;
@@ -42,6 +44,8 @@ export interface AgentConfig {
   };
   /** Enable web search for solutions (default: true) */
   webSearch?: boolean;
+  /** Git execution configuration */
+  git?: Partial<GitExecutionConfig>;
 }
 
 export class CodeRepairAgent {
@@ -490,10 +494,13 @@ async function main(): Promise<void> {
         }
 
         // Step 4: Review prompt
+        let appliedFiles: string[] = [];
+
         if (options.autoPush) {
           console.log('Auto-applying (auto-push flag set)...');
           const result = await agent.applyPatches(patches);
           console.log(`Applied: ${result.applied.length}, Failed: ${result.failed.length}`);
+          appliedFiles = result.applied;
         } else {
           const rl = createInterface({ input: process.stdin, output: process.stdout });
           const answer = await new Promise<string>((resolve) => {
@@ -507,8 +514,35 @@ async function main(): Promise<void> {
             if (result.failed.length > 0) {
               console.log(`Failed: ${result.failed.join(', ')}`);
             }
+            appliedFiles = result.applied;
           } else {
             console.log('Changes rejected. No files modified.');
+          }
+        }
+
+        // Step 5: Git execution (Phase 4)
+        if (appliedFiles.length > 0) {
+          const gitAgent = new GitExecutorAgent();
+          const gitResult = await gitAgent.run({
+            taskId: `git-${Date.now()}`,
+            instruction: 'Commit and push changes',
+            context: {
+              files: appliedFiles,
+              description: task.description,
+            },
+          });
+
+          const result = gitResult.result as { success: boolean; messages?: string[]; errors?: string[] };
+          if (result.success) {
+            console.log('\n✅ Git workflow complete');
+            for (const msg of result.messages || []) {
+              console.log(`  → ${msg}`);
+            }
+          } else {
+            console.log('\n⚠️ Git workflow failed');
+            for (const err of result.errors || []) {
+              console.log(`  ✗ ${err}`);
+            }
           }
         }
       } catch (err) {
