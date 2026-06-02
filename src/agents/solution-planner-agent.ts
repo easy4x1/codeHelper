@@ -17,7 +17,7 @@ export class SolutionPlannerAgent extends BaseAgent {
   }
 
   protected async execute(input: AgentInput): Promise<Record<string, unknown>> {
-    const { problem, findings, affectedFiles, repoPath } = parseContext(input.context, solutionPlannerContextSchema);
+    const { problem, findings, affectedFiles, repoPath, searchResults } = parseContext(input.context, solutionPlannerContextSchema);
 
     // Phase 1: Build code context for affected files
     const codeContext: Array<{ filePath: string; code: string }> = [];
@@ -32,12 +32,22 @@ export class SolutionPlannerAgent extends BaseAgent {
     }
 
     // Phase 2: LLM-powered solution generation
-    const llmFindings = findings.map(f => ({
+    const llmFindings: Array<{ description: string; confidence: number; filePath?: string; type?: 'bug' | 'style' }> = findings.map(f => ({
       description: f.description,
       confidence: f.confidence,
       filePath: f.nodeIds?.[0],
       type: f.type === 'fault' ? 'bug' as const : 'style' as const,
     }));
+
+    // Append web search results as additional insights
+    for (const sr of searchResults) {
+      llmFindings.push({
+        description: `[Web Search] ${sr.title}: ${sr.snippet}`,
+        confidence: sr.credibility,
+        filePath: undefined,
+        type: 'bug' as const,
+      });
+    }
 
     const llmResult = await this.llmService.generateSolution({
       problem,

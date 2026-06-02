@@ -7,6 +7,7 @@ import { buildImportMap } from './core/repo-scanner.js';
 import { FaultDetectorAgent } from './agents/fault-detector-agent.js';
 import { ContextBuilderAgent } from './agents/context-builder-agent.js';
 import { SolutionPlannerAgent } from './agents/solution-planner-agent.js';
+import { WebSearcherAgent } from './agents/web-searcher-agent.js';
 import { KnowledgeGraphBuilder } from './core/knowledge-graph.js';
 import { writeFile, readFile, access, mkdir, stat } from 'fs/promises';
 import { join, resolve, dirname } from 'path';
@@ -39,6 +40,8 @@ export interface AgentConfig {
     planning?: number;
     review?: number;
   };
+  /** Enable web search for solutions (default: true) */
+  webSearch?: boolean;
 }
 
 export class CodeRepairAgent {
@@ -151,6 +154,25 @@ export class CodeRepairAgent {
       });
     }
 
+    // ---- Web Search (Phase 3) ----
+    let searchResults: Array<{ title: string; url: string; snippet: string; credibilityScore: number }> = [];
+    if (this.config.webSearch !== false && findings.length > 0) {
+      const webSearcher = new WebSearcherAgent(this.memory);
+      const searchOutput = await webSearcher.run({
+        taskId: task.id,
+        instruction: 'Search web for solutions',
+        context: {
+          findings,
+          language: 'typescript',
+        },
+      });
+      searchResults = (searchOutput.result.searchResults as typeof searchResults) || [];
+
+      // Record token usage for search
+      const searchTokens = searchResults.reduce((sum, r) => sum + r.title.length + r.snippet.length, 0);
+      this.budgetManager.recordUsage('search', Math.ceil(searchTokens / 4));
+    }
+
     const planner = new SolutionPlannerAgent(this.memory, this.llmService);
     const plannerResult = await planner.run({
       taskId: task.id,
@@ -159,6 +181,11 @@ export class CodeRepairAgent {
         problem: task.description,
         findings,
         affectedFiles: task.context?.files || [],
+        searchResults: searchResults.map(r => ({
+          title: r.title,
+          snippet: r.snippet,
+          credibility: r.credibilityScore,
+        })),
       },
     });
 
@@ -255,13 +282,16 @@ async function main(): Promise<void> {
     .option('--provider <name>', 'LLM provider: anthropic | openai | moonshot | deepseek | zhipu | template', 'template')
     .option('--model <name>', 'Model name (e.g. claude-sonnet-4-6, kimi-k2.5, glm-5.1, gpt-5.4)')
     .option('--budget <tokens>', 'Total token budget', '50000')
-    .action(async (description: string, options: { repo: string; file: string[]; provider: string; model?: string; budget: string }) => {
+    .option('--web-search', 'Enable web search for solutions', true)
+    .option('--no-web-search', 'Disable web search for solutions')
+    .action(async (description: string, options: { repo: string; file: string[]; provider: string; model?: string; budget: string; webSearch: boolean }) => {
       try {
         const total = parseInt(options.budget, 10);
         const agent = new CodeRepairAgent({
           verbose: true,
           provider: options.provider,
           model: options.model,
+          webSearch: options.webSearch,
           tokenBudget: {
             total,
             analysis: Math.floor(total * 0.4),
@@ -399,13 +429,16 @@ async function main(): Promise<void> {
     .option('--auto-push', 'Automatically apply without confirmation', false)
     .option('--llm <provider>', 'LLM provider: anthropic | template', 'template')
     .option('--budget <tokens>', 'Total token budget', '50000')
-    .action(async (description: string, options: { repo: string; file: string[]; autoPush: boolean; llm: string; budget: string }) => {
+    .option('--web-search', 'Enable web search for solutions', true)
+    .option('--no-web-search', 'Disable web search for solutions')
+    .action(async (description: string, options: { repo: string; file: string[]; autoPush: boolean; llm: string; budget: string; webSearch: boolean }) => {
       try {
         const llmService = options.llm === 'anthropic' ? 'anthropic' as const : 'template' as const;
         const total = parseInt(options.budget, 10);
         const agent = new CodeRepairAgent({
           verbose: true,
           llmService,
+          webSearch: options.webSearch,
           tokenBudget: {
             total,
             analysis: Math.floor(total * 0.4),
