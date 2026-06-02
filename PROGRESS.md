@@ -11,7 +11,7 @@
 | 阶段 | 计划内容 | 完成状态 |
 |------|---------|---------|
 | Phase 1: MVP（核心闭环）| 核心 Agent + CLI + 基础图谱 + Patch/Review 流程 | **100%** |
-| Phase 2: 记忆优化 | Fingerprint 增量、传播裁剪、Token 预算 | **~85%** |
+| Phase 2: 记忆优化 | Fingerprint 增量、传播裁剪、Token 预算 | **100%** |
 | Phase 3: 联网增强 | Web Search、结果融合 | **0%** |
 | Phase 4: 自动化与集成 | Git 自动化、CI/CD | **0%** |
 | Phase 5: 学习与进化 | 模式提取、项目约定学习 | **0%** |
@@ -226,8 +226,8 @@
 | 语义缓存 | 60-80% 节省 | ❌ 未实现 | 计划 Phase 3 |
 | **增量图谱更新** | 90%+ 节省 | ✅ **已实现** | `syncRepo` 仅更新变化文件节点 |
 | 搜索降级 | 100% 搜索 token 节省 | ❌ 未实现 | 计划 Phase 3 |
-| 上下文压缩 | 50-70% 节省 | ❌ 未实现 | 计划 Phase 2 |
-| Batch 并行 | 时间节省 | ❌ 未实现 | 计划 Phase 2 |
+| 上下文压缩 | 50-70% 节省 | ❌ 未实现 | 计划 Phase 3（低优先级） |
+| Batch 并行 | 时间节省 | ❌ 未实现 | 计划 Phase 3（低优先级） |
 | 结果缓存 | 80%+ 节省 | ❌ 未实现 | 计划 Phase 3 |
 
 ---
@@ -247,10 +247,11 @@
 | `tests/patch.test.ts` | 7 | Patch 生成 + 应用 + 冲突检测 |
 | `tests/cli-review.test.ts` | 5 | CLI diff 格式化 + Review UI |
 | `tests/sync.test.ts` | 5 | 增量同步（新增/删除/不变/强制全量） |
-| `tests/llm-service.test.ts` | 10 | LLM 服务 + Zod Context 验证 |
-| **`tests/propagation.test.ts`** | **9** | **故障传播引擎（BFS + 概率 + 方向）** |
-| **`tests/token-budget.test.ts`** | **15** | **Token 预算（跟踪 + 降级 + 推荐）** |
-| **总计** | **113** | **14 个模块** |
+| `tests/llm-service.test.ts` | 12 | LLM 服务 + Zod Context + 多 Provider |
+| `tests/propagation.test.ts` | 9 | 故障传播引擎（BFS + 概率 + 方向） |
+| `tests/token-budget.test.ts` | 15 | Token 预算（跟踪 + 降级 + 推荐） |
+| **`tests/token-estimator.test.ts`** | **9** | **模型感知 Token 估算（国产模型 + 中文自适应）** |
+| **总计** | **125** | **15 个模块** |
 
 ---
 
@@ -273,10 +274,11 @@
 | 优先级 | 问题 | 影响 | 位置 | 建议解决时间 |
 |--------|------|------|------|-------------|
 | **低** | ~~`AgentInput.context` 为 `Record<string, unknown>`~~ | ~~各 Agent 需做不安全类型转换~~ | ~~所有 Agent 文件~~ | ✅ **已解决 — Zod Schema 验证** |
-| **中** | `signaturesEqual` 用 `JSON.stringify` 比较 | 对嵌套对象不够健壮 | `src/core/fingerprint.ts` | Phase 2 |
+| **低** | ~~`signaturesEqual` 用 `JSON.stringify` 比较~~ | ~~对嵌套对象不够健壮~~ | ~~`src/core/fingerprint.ts`~~ | ✅ **已解决 — 深度递归比较** |
 | **低** | ~~知识图谱邻居查询 O(n²)~~ | ~~大规模图谱性能问题~~ | ~~`src/core/knowledge-graph.ts`~~ | ✅ **已解决 — 索引优化到 O(degree)** |
-| **中** | Patch 冲突处理粗糙 | 仅字符串完全匹配，无三路合并 | `src/core/patch.ts` | Phase 2 |
-| **低** | 知识图谱节点删除后未清理孤儿边 | 可能残留无效边 | `src/core/knowledge-graph.ts` | Phase 2 |
+| **低** | ~~Patch 冲突处理粗糙~~ | ~~仅字符串完全匹配，无三路合并~~ | ~~`src/core/patch.ts`~~ | ✅ **已解决 — 精确匹配 → 模糊 substring 匹配** |
+| **低** | ~~知识图谱节点删除后未清理孤儿边~~ | ~~可能残留无效边~~ | ~~`src/core/knowledge-graph.ts`~~ | ✅ **已解决 — removeNode 自动调用 removeEdgesByNode** |
+| **低** | ~~`estimateTokens` 启发式粗糙（text.length / 4）~~ | ~~所有模型一刀切估算~~ | ~~`src/core/token-budget.ts`~~ | ✅ **已解决 — ModelAwareTokenEstimator（支持国产模型 + 中文自适应）** |
 
 ---
 
@@ -292,6 +294,9 @@
 6. **知识图谱索引优化** — 邻居查询从 O(n²) 优化到 O(degree)
 7. **故障传播分析引擎** — `PropagationEngine` + `ContextBuilderAgent` 集成
 8. **Token 预算控制** — `TokenBudgetManager` + 四级降级 + CLI `--budget`
+9. **模型感知 Token 估算** — `ModelAwareTokenEstimator`（国产模型 + 中文自适应）
+10. **安全多 Provider 配置** — `LlmConfigResolver` + API key 脱敏 + 环境变量/用户配置分层
+11. **技术债清空** — `signaturesEqual` 深度比较 + Patch 模糊匹配 + 孤儿边清理
 
 ### 6.2 剩余重要工作（按优先级）
 
@@ -302,14 +307,16 @@
 | 🟢 低 | **Git 自动化** | 分支/提交/推送/PR 创建 | Phase 4 |
 | 🟢 低 | **学习进化** | 历史任务模式提取 | Phase 5 |
 
-### 6.3 技术债（待处理）
+### 6.3 技术债
 
-| 优先级 | 问题 | 位置 |
-|--------|------|------|
-| 低 | `signaturesEqual` 用 `JSON.stringify` 比较 | `src/core/fingerprint.ts` |
-| 低 | Patch 冲突处理粗糙 | `src/core/patch.ts` |
-| 低 | 知识图谱节点删除后可能残留孤儿边 | `src/core/knowledge-graph.ts` |
-| 低 | `estimateTokens` 启发式粗糙（text.length / 4） | `src/core/token-budget.ts` |
+**当前状态：全部清空 ✅**
+
+| 优先级 | 问题 | 位置 | 状态 |
+|--------|------|------|------|
+| 低 | ~~`signaturesEqual` 用 `JSON.stringify` 比较~~ | ~~`src/core/fingerprint.ts`~~ | ✅ 已解决 |
+| 低 | ~~Patch 冲突处理粗糙~~ | ~~`src/core/patch.ts`~~ | ✅ 已解决 |
+| 低 | ~~知识图谱节点删除后可能残留孤儿边~~ | ~~`src/core/knowledge-graph.ts`~~ | ✅ 已解决 |
+| 低 | ~~`estimateTokens` 启发式粗糙~~ | ~~`src/core/token-budget.ts`~~ | ✅ 已解决 |
 
 ---
 
@@ -328,9 +335,11 @@ src/
 │   ├── repo-scanner.ts            96 行  (扫描器)
 │   ├── patch.ts                   82 行  (Patch 数据结构)
 │   ├── sync.ts                   163 行  (增量同步)
-│   ├── llm-service.ts            249 行  (LLM 服务抽象)
-│   ├── propagation.ts            303 行  (故障传播引擎)         ✅ 新增
-│   └── token-budget.ts           159 行  (Token 预算管理器)      ✅ 新增
+│   ├── llm-service.ts            425 行  (LLM 服务抽象 + 多 Provider)
+│   ├── propagation.ts            303 行  (故障传播引擎)
+│   ├── token-budget.ts           170 行  (Token 预算管理器)
+│   ├── token-estimator.ts        100 行  (模型感知 Token 估算)    ✅ 新增
+│   └── llm-config.ts             180 行  (LLM 配置 + API key 安全)  ✅ 新增
 ├── agents/
 │   ├── base-agent.ts              47 行  (Agent 基类)
 │   ├── patch-generator-agent.ts   53 行  (Patch 生成)
@@ -344,7 +353,7 @@ src/
     ├── logger.ts                  36 行  (日志)
     └── hash.ts                     5 行  (哈希)
 
-总计: ~2,778 行代码 + 113 个测试
+总计: ~3,050 行代码 + 125 个测试（15 个测试文件）
 ```
 
 ---
