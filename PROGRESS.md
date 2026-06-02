@@ -2,7 +2,7 @@
 
 > 生成日期: 2026-06-02
 > 对比基准: DESIGN.md v1.0.0
-> 当前版本: 0.3.0 (Phase 3 进行中)
+> 当前版本: 0.4.0 (Phase 4 进行中)
 
 ---
 
@@ -16,7 +16,7 @@
 | Phase 4: 自动化与集成 | Git 自动化、CI/CD | **0%** |
 | Phase 5: 学习与进化 | 模式提取、项目约定学习 | **0%** |
 
-**整体完成度: ~75%**
+**整体完成度: ~85%**
 
 ---
 
@@ -33,7 +33,7 @@
 | `root-cause-analyzer` | 综合分析，定位根因 | ⚠️ **部分完成** | `SolutionPlannerAgent` 集成 LLM 生成根因分析 |
 | `solution-planner` | 输出结构化修改方案 | ✅ **LLM 增强** | 生成带 `originalCode`/`modifiedCode` 的深度方案 |
 | `patch-generator` | 将方案转换为具体代码 diff | ✅ **已完成** | `PatchGeneratorAgent` 实现，支持 add/modify/delete |
-| `git-executor` | 执行 git 操作 | ❌ **未开始** | 计划 Phase 4 实现 |
+| `git-executor` | 执行 git 操作 | ✅ **已完成** | `GitExecutor` + `GitExecutorAgent`，分支创建/提交/推送 |
 
 ### 1.2 核心模块实现状态
 
@@ -292,7 +292,8 @@
 | **`tests/web-search.test.ts`** | **13** | **Web 搜索引擎（查询构建 + 模拟搜索 + 策略）** |
 | **`tests/web-searcher-agent.test.ts`** | **3** | **WebSearcherAgent 集成** |
 | **`tests/patch-llm.test.ts`** | **3** | **LLM generatePatch（Template + Anthropic）** |
-| **总计** | **144** | **18 个模块** |
+| **`tests/git-executor.test.ts`** | **4** | **GitExecutor 配置 + 安全策略** |
+| **总计** | **152** | **19 个模块** |
 
 ---
 
@@ -308,7 +309,7 @@
 | LLM 为模板模拟（非真实 API） | 检测结果基于启发式模式，非语义理解 | Phase 3+ 接入真实 API（AnthropicLlmService 已就绪）|
 | **~~无联网搜索~~** | ~~无法获取外部知识补充~~ | ✅ **已解决 — WebSearchEngine + WebSearcherAgent 实现** |
 | **~~联网搜索为模拟 provider~~** | ~~未接入真实 Web Search API~~ | ✅ **已解决 — DuckDuckGoSearchProvider 实现（无需 API key）** |
-| 无 Git 自动化 | 不执行分支/提交/推送 | Phase 4 实现 |
+| **~~无 Git 自动化~~** | ~~不执行分支/提交/推送~~ | ✅ **已解决 — GitExecutor + GitExecutorAgent 实现** |
 | **~~无故障传播分析引擎~~** | ~~无法基于图谱计算影响范围~~ | ✅ **已解决 — PropagationEngine 实现** |
 
 ### 5.2 技术债
@@ -344,6 +345,8 @@
 14. **LLM generatePatch** — `TemplateLlmService` / `AnthropicLlmService` / `HttpLlmService` 全部实现
 15. **PatchGeneratorAgent LLM 增强** — 缺失代码时自动调用 LLM 生成 diff
 16. **CLI `--web-search`** — 默认启用，支持 `--no-web-search` 禁用
+17. **Git 自动化** — `GitExecutor` + `GitExecutorAgent`，分支创建/提交/推送
+18. **Git 安全策略** — 禁止直接修改 protected branch，自动创建 feature 分支
 
 ### 6.2 剩余重要工作（按优先级）
 
@@ -352,7 +355,7 @@
 | 🟡 中 | **~~联网搜索模块~~** | ~~Web Search API 接入~~ | ✅ **已完成 — 模拟 provider + CLI 集成** |
 | 🟡 中 | **~~Patch 生成器增强~~** | ~~LLM 生成可执行代码 diff~~ | ✅ **已完成 — 全 Provider 支持** |
 | 🟢 低 | **~~真实 Web Search API~~** | ~~接入 Google/Bing 等真实搜索 API~~ | ✅ **已完成 — DuckDuckGo（无需 API key）** |
-| 🟢 低 | **Git 自动化** | 分支/提交/推送/PR 创建 | Phase 4 |
+| 🟢 低 | **~~Git 自动化~~** | ~~分支/提交/推送/PR 创建~~ | ✅ **已完成 — GitExecutor + 安全分支策略** |
 | 🟢 低 | **学习进化** | 历史任务模式提取 | Phase 5 |
 
 ### 6.3 技术债
@@ -388,7 +391,8 @@ src/
 │   ├── token-budget.ts           170 行  (Token 预算管理器)
 │   ├── token-estimator.ts        100 行  (模型感知 Token 估算)    ✅ 新增
 │   ├── llm-config.ts             180 行  (LLM 配置 + API key 安全)  ✅ 新增
-│   └── **web-search.ts**         **180 行**  (**Web 搜索引擎 + 查询构建 + 模拟 provider**)  ✅ **新增**
+│   ├── **web-search.ts**         **180 行**  (**Web 搜索引擎 + DuckDuckGo**)  ✅ **新增**
+│   └── **git-executor.ts**       **200 行**  (**Git 操作封装 + 安全策略**)    ✅ **新增**
 ├── agents/
 │   ├── base-agent.ts              47 行  (Agent 基类)
 │   ├── patch-generator-agent.ts   75 行  (Patch 生成 + **LLM 增强**)   ✅ **修改**
@@ -396,14 +400,15 @@ src/
 │   ├── fault-detector-agent.ts    96 行  (LLM 增强故障检测)
 │   ├── repo-scanner-agent.ts      39 行  (扫描 Agent)
 │   ├── context-builder-agent.ts   55 行  (上下文构建 + 传播集成)   ✅ 修改
-│   └── **web-searcher-agent.ts**  **65 行**  (**Web 搜索 Agent**)           ✅ **新增**
+│   ├── **web-searcher-agent.ts**  **65 行**  (**Web 搜索 Agent**)           ✅ **新增**
+│   └── **git-executor-agent.ts**  **35 行**  (**Git 执行 Agent**)           ✅ **新增**
 ├── interface/
 │   └── cli-review.ts              61 行  (Review UI)
 └── utils/
     ├── logger.ts                  36 行  (日志)
     └── hash.ts                     5 行  (哈希)
 
-总计: ~3,500 行代码 + **144** 个测试（**18** 个测试文件）
+总计: ~3,750 行代码 + **152** 个测试（**19** 个测试文件）
 ```
 
 ---
