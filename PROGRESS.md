@@ -307,7 +307,7 @@
 | **~~SolutionPlanner 无 LLM 参与~~** | ~~生成通用方案，无深度根因分析~~ | ✅ **已解决 — 集成 TemplateLlmService 生成带代码的方案** |
 | LLM 为模板模拟（非真实 API） | 检测结果基于启发式模式，非语义理解 | Phase 3+ 接入真实 API（AnthropicLlmService 已就绪）|
 | **~~无联网搜索~~** | ~~无法获取外部知识补充~~ | ✅ **已解决 — WebSearchEngine + WebSearcherAgent 实现** |
-| 联网搜索为模拟 provider | 未接入真实 Web Search API（Google/Bing） | Phase 3.x 接入真实 API |
+| **~~联网搜索为模拟 provider~~** | ~~未接入真实 Web Search API~~ | ✅ **已解决 — DuckDuckGoSearchProvider 实现（无需 API key）** |
 | 无 Git 自动化 | 不执行分支/提交/推送 | Phase 4 实现 |
 | **~~无故障传播分析引擎~~** | ~~无法基于图谱计算影响范围~~ | ✅ **已解决 — PropagationEngine 实现** |
 
@@ -351,7 +351,7 @@
 |--------|------|------|------|
 | 🟡 中 | **~~联网搜索模块~~** | ~~Web Search API 接入~~ | ✅ **已完成 — 模拟 provider + CLI 集成** |
 | 🟡 中 | **~~Patch 生成器增强~~** | ~~LLM 生成可执行代码 diff~~ | ✅ **已完成 — 全 Provider 支持** |
-| 🟡 中 | **真实 Web Search API** | 接入 Google/Bing 等真实搜索 API | Phase 3.x |
+| 🟢 低 | **~~真实 Web Search API~~** | ~~接入 Google/Bing 等真实搜索 API~~ | ✅ **已完成 — DuckDuckGo（无需 API key）** |
 | 🟢 低 | **Git 自动化** | 分支/提交/推送/PR 创建 | Phase 4 |
 | 🟢 低 | **学习进化** | 历史任务模式提取 | Phase 5 |
 
