@@ -336,7 +336,9 @@ interface RepairTask {
 
 ---
 
-## Environment Variables
+## API Keys & Configuration
+
+### LLM Providers
 
 | Variable | Provider | Required For |
 |----------|----------|-------------|
@@ -351,6 +353,35 @@ interface RepairTask {
 All keys are automatically masked in logs:
 ```
 key: sk-a****YhbK
+```
+
+### Web Search (Tavily)
+
+Web search uses **Tavily** as the primary provider with DuckDuckGo as fallback.
+
+**Configuration priority**:
+
+1. **Environment variable** (recommended for CI/CD):
+   ```bash
+   export TAVILY_API_KEY=tvly-xxxxxxxxxxxxxxxx
+   ```
+
+2. **User config file** (`~/.code-agent/config.yaml`):
+   ```yaml
+   tavily:
+     apiKey: tvly-xxxxxxxxxxxxxxxx
+   ```
+
+3. **Keyless mode** (default — no configuration needed):
+   - Works out of the box without any API key
+   - Subject to Tavily rate limits
+   - When limit reached, automatically falls back to DuckDuckGo → Simulation
+
+**Get a Tavily API key**: https://tavily.com (free tier available)
+
+**Disable web search**:
+```bash
+code-agent plan "..." --no-web-search
 ```
 
 ---
