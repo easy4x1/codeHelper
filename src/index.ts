@@ -27,6 +27,7 @@ import { GitExecutorAgent } from './agents/git-executor-agent.js';
 import { RootCauseAnalyzerAgent } from './agents/root-cause-analyzer-agent.js';
 import type { GitExecutionConfig } from './core/git-executor.js';
 import { SemanticCache } from './core/semantic-cache.js';
+import { LearningAgent } from './agents/learning-agent.js';
 
 export interface AgentConfig {
   verbose?: boolean;
@@ -401,6 +402,18 @@ async function main(): Promise<void> {
 
         const plan = await agent.plan(task);
         const planPath = await agent.savePlan(plan, options.repo);
+
+        // Record plan generation for learning
+        const learningAgent = new LearningAgent(agent.getMemory());
+        learningAgent.recordTaskCompletion(
+          task.id,
+          task.description,
+          task.context?.files || [],
+          plan.changes.length,
+          true, // plan generation always "succeeds"
+          undefined,
+          plan
+        );
         await agent.saveMemory(memoryPath);
 
         console.log('\n=== Solution Plan ===\n');
@@ -692,6 +705,19 @@ async function main(): Promise<void> {
             }
           }
         }
+
+        // Record task for learning (Phase 5)
+        const learningAgent = new LearningAgent(agent.getMemory());
+        learningAgent.recordTaskCompletion(
+          task.id,
+          task.description,
+          task.context?.files || [],
+          plan.changes.length,
+          appliedFiles.length > 0,
+          undefined,
+          plan
+        );
+        await agent.saveMemory(memoryPath);
       } catch (err) {
         console.error(err);
         process.exit(1);
@@ -836,6 +862,86 @@ async function main(): Promise<void> {
 
         if (succeeded < results.length) {
           process.exit(1);
+        }
+      } catch (err) {
+        console.error(err);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('history')
+    .description('Show task history and learned patterns')
+    .option('-r, --repo <path>', 'Repository path', '.')
+    .option('--patterns', 'Show fault/fix patterns', false)
+    .option('--conventions', 'Show project conventions', false)
+    .action(async (options: { repo: string; patterns: boolean; conventions: boolean }) => {
+      try {
+        const agent = new CodeRepairAgent({});
+        const memoryPath = join(resolve(options.repo), '.repair-agent', 'memory.json');
+        await agent.loadMemory(memoryPath);
+        const memory = agent.getMemory();
+        const learned = memory.getLearnedMemory();
+
+        console.log('\n=== Task History ===');
+        console.log(`Total tasks: ${learned.taskHistory.length}`);
+        for (const task of learned.taskHistory.slice(-10)) {
+          const icon = task.success ? '✅' : '❌';
+          console.log(`  ${icon} ${task.description} (${task.findingsCount} findings)`);
+        }
+
+        if (options.patterns) {
+          console.log('\n=== Fault Patterns ===');
+          for (const p of learned.faultPatterns.sort((a, b) => b.frequency - a.frequency)) {
+            console.log(`  • ${p.pattern} (×${p.frequency})`);
+          }
+          console.log('\n=== Fix Patterns ===');
+          for (const p of learned.fixPatterns.sort((a, b) => b.frequency - a.frequency)) {
+            console.log(`  • ${p.pattern} (×${p.frequency})`);
+          }
+        }
+
+        if (options.conventions) {
+          console.log('\n=== Project Conventions ===');
+          for (const c of learned.projectConventions) {
+            console.log(`  [${c.category}] ${c.rule} (${(c.confidence * 100).toFixed(0)}%)`);
+          }
+        }
+      } catch (err) {
+        console.error(err);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('learn')
+    .description('Learn project conventions from codebase')
+    .argument('[repo-path]', 'Path to repository', '.')
+    .action(async (repoPath: string) => {
+      try {
+        const codeAgent = new CodeRepairAgent({ verbose: true });
+        const memoryPath = join(resolve(repoPath), '.repair-agent', 'memory.json');
+        await codeAgent.loadMemory(memoryPath);
+
+        const learningAgent = new LearningAgent(codeAgent.getMemory());
+        const result = await learningAgent.run({
+          taskId: `learn-${Date.now()}`,
+          instruction: 'Learn project conventions',
+          context: { repoPath: resolve(repoPath) },
+        });
+
+        await codeAgent.saveMemory(memoryPath);
+
+        console.log('\n=== Learning Complete ===');
+        console.log(`Conventions learned: ${result.result.conventionsLearned}`);
+        console.log(`Patterns extracted: ${result.result.patternsExtracted}`);
+
+        const conventions = codeAgent.getMemory().getConventions();
+        if (conventions.length > 0) {
+          console.log('\nLearned conventions:');
+          for (const c of conventions) {
+            console.log(`  [${c.category}] ${c.rule}`);
+          }
         }
       } catch (err) {
         console.error(err);

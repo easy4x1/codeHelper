@@ -5,6 +5,8 @@ import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { generatePatch } from '../src/core/patch.js';
 import { SemanticCache } from '../src/core/semantic-cache.js';
+import { MemoryMiddleware } from '../src/core/memory.js';
+import { LearningAgent } from '../src/agents/learning-agent.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const fixturePath = join(__dirname, 'fixtures', 'sample-repo');
@@ -179,5 +181,44 @@ describe('Semantic cache integration', () => {
     // Second plan — similar description should ideally be served from cache
     // Note: This test validates the cache mechanism exists; actual cache hit
     // depends on the semantic similarity threshold
+  });
+});
+
+describe('CLI: history and learn', () => {
+  it('records and retrieves task history', () => {
+    const memory = new MemoryMiddleware();
+    const agent = new LearningAgent(memory);
+
+    agent.recordTaskCompletion('t1', 'Fix bug', ['src/a.ts'], 2, true);
+    agent.recordTaskCompletion('t2', 'Refactor', ['src/b.ts'], 0, true);
+
+    const history = memory.getTaskHistory();
+    expect(history).toHaveLength(2);
+    expect(history[0].description).toBe('Fix bug');
+  });
+
+  it('learns conventions from fingerprints', async () => {
+    const memory = new MemoryMiddleware();
+    // Add a mock fingerprint
+    memory.setFingerprint({
+      filePath: 'src/utils.ts',
+      contentHash: 'abc',
+      functions: [{ name: 'getUserName', params: [], isExported: true, startLine: 1, endLine: 1 }],
+      classes: [],
+      imports: [],
+      exports: [],
+      totalLines: 10,
+      hasStructuralAnalysis: true,
+    });
+
+    const agent = new LearningAgent(memory);
+    await agent.run({
+      taskId: 'learn-test',
+      instruction: 'Learn conventions',
+      context: { repoPath: '.' },
+    });
+
+    const conventions = memory.getConventions();
+    expect(conventions.length).toBeGreaterThan(0);
   });
 });
