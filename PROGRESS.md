@@ -1,8 +1,8 @@
 # Code Repair Agent — 实现进度报告
 
-> 生成日期: 2026-06-02
+> 生成日期: 2026-06-03
 > 对比基准: DESIGN.md v1.0.0
-> 当前版本: 0.4.0 (Phase 4 进行中)
+> 当前版本: 0.4.0 (Phase 3 Deferred 完成, Phase 4 进行中)
 
 ---
 
@@ -12,7 +12,7 @@
 |------|---------|---------|
 | Phase 1: MVP（核心闭环）| 核心 Agent + CLI + 基础图谱 + Patch/Review 流程 | **100%** |
 | Phase 2: 记忆优化 | Fingerprint 增量、传播裁剪、Token 预算 | **100%** |
-| Phase 3: 联网增强 | Web Search、结果融合、LLM Patch 生成 | **100%** |
+| Phase 3: 联网增强 | Web Search、结果融合、LLM Patch 生成、搜索降级、Batch 并行、结果缓存、语义缓存、上下文压缩 | **100%** |
 | Phase 4: 自动化与集成 | Git 自动化、CI/CD、批量任务 | **核心完成 (~70%)** |
 | Phase 5: 学习与进化 | 模式提取、项目约定学习 | **0%** |
 
@@ -261,12 +261,12 @@
 |------|---------|------|------|
 | **Fingerprint 跳过** | 80-95% 节省 | ✅ **已实现** | `syncRepo` 自动跳过未变化文件 |
 | **故障传播裁剪** | 70-90% 节省 | ✅ **已实现** | `PropagationEngine` 自动裁剪分析集 |
-| 语义缓存 | 60-80% 节省 | ❌ 未实现 | 计划 Phase 3 |
+| **语义缓存** | 60-80% 节省 | ✅ **新增** | `SemanticCache` Jaccard 关键词相似度复用历史 plan |
 | **增量图谱更新** | 90%+ 节省 | ✅ **已实现** | `syncRepo` 仅更新变化文件节点 |
-| 搜索降级 | 100% 搜索 token 节省 | ❌ 未实现 | 计划 Phase 3 |
-| 上下文压缩 | 50-70% 节省 | ❌ 未实现 | 计划 Phase 3（低优先级） |
-| Batch 并行 | 时间节省 | ❌ 未实现 | 计划 Phase 3（低优先级） |
-| 结果缓存 | 80%+ 节省 | ❌ 未实现 | 计划 Phase 3 |
+| **搜索降级** | 100% 搜索 token 节省 | ✅ **新增** | `plan()` 集成 budget `enableWebSearch` 建议 |
+| **上下文压缩** | 50-70% 节省 | ✅ **新增** | `ContextCompressor` 大文件结构摘要 |
+| **Batch 并行** | 时间节省 | ✅ **新增** | `FaultDetectorAgent` 文件级 `Promise.all` 并行 |
+| **结果缓存** | 80%+ 节省 | ✅ **新增** | `ResultCache` 指纹哈希键缓存分析结果 |
 
 ---
 
@@ -280,8 +280,11 @@
 | `tests/memory.test.ts` | 5 | 记忆层 L1/L2/L3 + 序列化 |
 | `tests/scanner.test.ts` | 3 | 仓库扫描 + 导入映射 |
 | `tests/base-agent.test.ts` | 3 | Agent 基类 + 日志 + 计时 |
-| `tests/agents.test.ts` | 6 | 6 个专用 Agent（含 PatchGenerator + 传播集成） |
-| `tests/cli.test.ts` | 11 | CLI 入口 + 内存持久化 + apply + 预算测试 |
+| `tests/agents.test.ts` | 8 | 8 个专用 Agent（含 PatchGenerator + 传播集成 + 并行分析 + 缓存集成） |
+| `tests/cli.test.ts` | 12 | CLI 入口 + 内存持久化 + apply + 预算测试 + 搜索降级 |
+| `tests/result-cache.test.ts` | 5 | 结果缓存（hit/miss/hash-change/deep-copy/clear） |
+| `tests/semantic-cache.test.ts` | 6 | 语义缓存（Jaccard 相似度 + plan 复用） |
+| `tests/context-compressor.test.ts` | 4 | 上下文压缩（小文件透传 + 大文件摘要 + fallback） |
 | `tests/patch.test.ts` | 7 | Patch 生成 + 应用 + 冲突检测 |
 | `tests/cli-review.test.ts` | 5 | CLI diff 格式化 + Review UI |
 | `tests/sync.test.ts` | 5 | 增量同步（新增/删除/不变/强制全量） |
@@ -294,7 +297,7 @@
 | **`tests/patch-llm.test.ts`** | **3** | **LLM generatePatch（Template + Anthropic）** |
 | **`tests/git-executor.test.ts`** | **4** | **GitExecutor 配置 + 安全策略** |
 | **`tests/root-cause-analyzer-agent.test.ts`** | **4** | **RootCauseAnalyzerAgent 根因分析** |
-| **总计** | **156** | **20 个模块** |
+| **总计** | **180** | **24 个模块** |
 
 ---
 
@@ -357,6 +360,11 @@
 25. **GitHub Actions CI** — `.github/workflows/ci.yml`，Node 20/22 矩阵，测试 + 构建
 26. **`code-agent batch`** — 批量任务处理（JSON 任务列表，顺序/并行模式，autoPush 支持）
 27. **package.json 版本同步** — `0.2.0` → `0.4.0`
+28. **搜索降级集成** — `plan()` 集成 `TokenBudgetManager` 的 `enableWebSearch` 建议
+29. **Batch 并行分析** — `FaultDetectorAgent` 文件级分析改为 `Promise.all` 并行
+30. **结果缓存** — `ResultCache` 模块：指纹哈希键缓存分析结果
+31. **语义缓存** — `SemanticCache` 模块：Jaccard 关键词相似度复用历史 plan
+32. **上下文压缩** — `ContextCompressor` 模块：大文件结构摘要，节省 50-70% token
 
 ### 6.2 剩余重要工作（按优先级）
 
@@ -419,7 +427,7 @@ src/
     ├── logger.ts                  36 行  (日志)
     └── hash.ts                     5 行  (哈希)
 
-总计: ~4,200 行代码 + **161** 个测试（**21** 个测试文件）
+总计: ~4,700 行代码 + **180** 个测试（**24** 个测试文件）
 ```
 
 ---
