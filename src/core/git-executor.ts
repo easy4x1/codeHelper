@@ -22,6 +22,14 @@ export interface GitExecutionConfig {
     force: boolean;
     createPR: boolean;
   };
+  /** Pre-commit safety checks (DESIGN.md 8.3 SafetyNet) */
+  safetyChecks: {
+    syntaxCheck: boolean;
+    testRun: boolean;
+    lintCheck: boolean;
+    diffSizeLimit: number;    // Max lines per commit
+    fileCountLimit: number;   // Max files per commit
+  };
 }
 
 export const DEFAULT_GIT_CONFIG: GitExecutionConfig = {
@@ -40,6 +48,13 @@ export const DEFAULT_GIT_CONFIG: GitExecutionConfig = {
     remote: 'origin',
     force: false,
     createPR: false,
+  },
+  safetyChecks: {
+    syntaxCheck: true,
+    testRun: true,
+    lintCheck: false,
+    diffSizeLimit: 500,
+    fileCountLimit: 20,
   },
 };
 
@@ -74,6 +89,7 @@ export class GitExecutor {
       branch: { ...DEFAULT_GIT_CONFIG.branch, ...config?.branch },
       commit: { ...DEFAULT_GIT_CONFIG.commit, ...config?.commit },
       push: { ...DEFAULT_GIT_CONFIG.push, ...config?.push },
+      safetyChecks: { ...DEFAULT_GIT_CONFIG.safetyChecks, ...config?.safetyChecks },
     };
   }
 
@@ -160,7 +176,54 @@ export class GitExecutor {
   }
 
   /**
-   * Full execution flow: stage → commit → (branch) → push
+   * Run pre-commit safety checks (DESIGN.md 8.3 SafetyNet).
+   * Returns array of error messages; empty array = all checks passed.
+   */
+  async runSafetyChecks(files: string[]): Promise<string[]> {
+    const errors: string[] = [];
+    const checks = this.config.safetyChecks;
+
+    // File count limit
+    if (checks.fileCountLimit > 0 && files.length > checks.fileCountLimit) {
+      errors.push(
+        `File count limit exceeded: ${files.length} > ${checks.fileCountLimit}`
+      );
+    }
+
+    // Diff size limit
+    if (checks.diffSizeLimit > 0) {
+      const diff = await this.getDiff();
+      const lineCount = diff.split('\n').length;
+      if (lineCount > checks.diffSizeLimit) {
+        errors.push(
+          `Diff size limit exceeded: ${lineCount} lines > ${checks.diffSizeLimit}`
+        );
+      }
+    }
+
+    // Syntax check (TypeScript compilation)
+    if (checks.syntaxCheck) {
+      try {
+        await execAsync('npx tsc --noEmit', { timeout: 30000 });
+      } catch {
+        errors.push('TypeScript syntax check failed');
+      }
+    }
+
+    // Test run
+    if (checks.testRun) {
+      try {
+        await execAsync('npx vitest run', { timeout: 60000 });
+      } catch {
+        errors.push('Test suite failed');
+      }
+    }
+
+    return errors;
+  }
+
+  /**
+   * Full execution flow: safety checks → stage → commit → (branch) → push
    */
   async execute(
     files: string[],
@@ -189,6 +252,15 @@ export class GitExecutor {
           result.messages.push(`Created branch: ${branchName}`);
         }
       }
+
+      // DESIGN.md 8.3: Pre-commit safety checks
+      const checkErrors = await this.runSafetyChecks(files);
+      if (checkErrors.length > 0) {
+        result.errors.push(...checkErrors);
+        result.errors.push('Safety checks failed — commit aborted');
+        return result;
+      }
+      result.messages.push('Safety checks passed');
 
       // Stage files
       await this.stageFiles(files);

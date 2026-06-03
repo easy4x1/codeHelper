@@ -18,11 +18,11 @@
 
 | 层级 | 策略 | 理由 |
 |------|------|------|
-| Agent 编排 | **手写 PipelineRunner** | 项目自定义机制（Fingerprint、传播裁剪、Token 预算）与框架抽象冲突 |
-| LLM 调用 | **Vercel AI SDK (`ai`)** | TypeScript 原生、多 provider 统一、结构化输出支持 |
+| Agent 编排 | **手写顺序编排**（`index.ts` 中直接调用） | 项目自定义机制（Fingerprint、传播裁剪、Token 预算）与框架抽象冲突；独立 `PipelineRunner` 延后到 Phase 4 |
+| LLM 调用 | **各 Provider 原生 SDK + 通用 `HttpLlmService`** | 未引入 Vercel AI SDK；`AnthropicLlmService` 用 `@anthropic-ai/sdk`，`HttpLlmService` 覆盖 OpenAI 兼容 API（OpenAI/Moonshot/DeepSeek/Zhipu） |
 | 类型校验 | **Zod** | 运行时校验 + TypeScript 类型推导一体化 |
 | CLI 框架 | **commander**（已引入） | 成熟的 Node.js CLI 框架 |
-| 代码解析 | **tree-sitter**（已引入） | 已确定，支持 10+ 语言 |
+| 代码解析 | **tree-sitter**（已引入） | 已落地，支持 TypeScript/TSX/JavaScript/JSX/Python |
 | 本地搜索 | **fuse.js**（已引入） | 已确定，模糊搜索 |
 | 测试框架 | **vitest**（已引入） | 已确定，与 UA 一致 |
 
@@ -287,78 +287,45 @@ interface PipelineState {
 
 ## 7. 目录结构与文件组织
 
-### 7.1 源码目录（细化）
+### 7.1 源码目录（实际结构）
 
 ```
 src/
-├── index.ts                    # 主入口，导出 CodeRepairAgent 类
-├── cli/
-│   ├── index.ts                # CLI 入口（commander 注册）
-│   ├── commands/
-│   │   ├── init.ts             # code-agent init
-│   │   ├── fix.ts              # code-agent fix
-│   │   ├── plan.ts             # code-agent plan
-│   │   ├── apply.ts            # code-agent apply
-│   │   ├── sync.ts             # code-agent sync
-│   │   ├── status.ts           # code-agent status
-│   │   ├── history.ts          # code-agent history
-│   │   └── learn.ts            # code-agent learn
-│   └── prompts.ts              # CLI 交互提示（inquirer 风格）
+├── index.ts                    # 主入口 + CLI 注册（commander）+ Agent 编排（~450 行）
 ├── core/
-│   ├── agent/
-│   │   ├── loader.ts           # Agent Markdown 加载解析
-│   │   ├── client.ts           # LLMClient 封装
-│   │   └── types.ts            # Agent 相关类型
-│   ├── pipeline/
-│   │   ├── runner.ts           # PipelineRunner 核心
-│   │   ├── phases.ts           # Phase 定义与注册
-│   │   ├── state.ts            # PipelineState 管理
-│   │   └── types.ts            # Pipeline 类型
-│   ├── knowledge-graph/
-│   │   ├── graph.ts            # KnowledgeGraph 类
-│   │   ├── nodes.ts            # 节点类型定义
-│   │   ├── edges.ts            # 边类型定义
-│   │   ├── builder.ts          # 图谱构建器
-│   │   └── persistence.ts      # 图谱持久化
-│   ├── fingerprint/
-│   │   ├── fingerprint.ts      # 指纹计算（已有）
-│   │   ├── classifier.ts       # 变更分类器
-│   │   ├── store.ts            # 指纹存储（LOAD-PATCH-SAVE）
-│   │   └── types.ts            # 指纹类型
-│   ├── propagation/
-│   │   ├── engine.ts           # 故障传播分析引擎
-│   │   ├── rules.ts            # 传播规则定义
-│   │   └── types.ts            # 传播结果类型
-│   ├── search/
-│   │   ├── local.ts            # fuse.js 本地搜索
-│   │   ├── web.ts              # 联网搜索（抽象接口）
-│   │   ├── fusion.ts           # 结果融合
-│   │   └── types.ts            # 搜索类型
-│   ├── memory/
-│   │   ├── repo-memory.ts      # L1: 仓库级记忆
-│   │   ├── task-memory.ts      # L2: 任务级记忆
-│   │   ├── learned-memory.ts   # L3: 学习记忆
-│   │   └── types.ts            # 记忆类型
-│   └── types.ts                # 核心共享类型（已有）
-├── scanners/
-│   ├── project-scanner.ts      # 仓库扫描（复用 UA 逻辑）
-│   ├── import-extractor.ts     # Import Map 提取
-│   └── language-detector.ts    # 语言检测
-├── schemas/                    # Zod Schema 定义
-│   ├── common.ts
-│   ├── scan.ts
-│   ├── fault.ts
-│   ├── analysis.ts
-│   ├── plan.ts
-│   └── patch.ts
-├── utils/
-│   ├── hash.ts                 # 哈希工具（已有）
-│   ├── file.ts                 # 文件操作
-│   ├── git.ts                  # Git 操作封装
-│   └── config.ts               # 配置读取
-└── types/                      # 纯类型定义（无 Zod，供外部使用）
-    └── index.ts
+│   ├── types.ts                # 核心共享类型 + Zod Schema（320 行）
+│   ├── fingerprint.ts          # Tree-sitter 指纹计算 + 变更分类（319 行）
+│   ├── knowledge-graph.ts      # 知识图谱构建器 + 索引（100 行）
+│   ├── memory.ts               # L1/L2/L3 三层记忆（128 行）
+│   ├── repo-scanner.ts         # 仓库扫描器 + Import Map（96 行）
+│   ├── patch.ts                # Patch 数据结构 + 应用逻辑（82 行）
+│   ├── sync.ts                 # 增量同步核心（163 行）
+│   ├── llm-service.ts          # LLM 服务抽象 + Template/Anthropic/Http（425 行）
+│   ├── llm-config.ts           # LLM 配置解析 + API key 安全（180 行）
+│   ├── propagation.ts          # 故障传播引擎 BFS + 概率衰减（303 行）
+│   ├── token-budget.ts         # Token 预算管理 + 四级降级（170 行）
+│   ├── token-estimator.ts      # 模型感知 Token 估算（100 行）
+│   └── web-search.ts           # Web 搜索引擎 + 查询构建 + 模拟 provider（180 行）
+├── agents/
+│   ├── base-agent.ts           # Agent 基类（47 行）
+│   ├── repo-scanner-agent.ts   # 扫描 Agent（39 行）
+│   ├── fault-detector-agent.ts # LLM 增强故障检测（96 行）
+│   ├── context-builder-agent.ts# 上下文构建 + 传播集成（55 行）
+│   ├── web-searcher-agent.ts   # Web 搜索 Agent（65 行）
+│   ├── solution-planner-agent.ts # LLM 增强方案规划 + 搜索集成（85 行）
+│   └── patch-generator-agent.ts  # Patch 生成 + LLM 增强（75 行）
+├── interface/
+│   └── cli-review.ts           # CLI diff 格式化 + Review UI（61 行）
+└── utils/
+    ├── logger.ts               # 日志工具（36 行）
+    └── hash.ts                 # SHA-256 哈希（5 行）
 ```
+
+**与规划差异说明**：
+- ❌ 未创建 `cli/`、`core/agent/`、`core/pipeline/`、`scanners/`、`schemas/`、`types/` 子目录
+- ❌ 未实现 `PipelineRunner` 状态机（Agent 直接在 `index.ts` 中顺序编排）
+- ❌ Agent 以 TypeScript 类实现，非 Markdown + YAML 配置
+- ✅ 核心模块按扁平结构组织，职责清晰，测试覆盖充分
 
 ### 7.2 Agent 定义目录
 
@@ -378,67 +345,88 @@ docs/agents/
 
 ## 8. 开发路线图（可执行版）
 
-### Phase 1: 基础设施（Week 1-2）
+### Phase 1: 基础设施 ✅（Week 1-2）
 
 **目标**：搭好骨架，能跑通单个 Agent 的调用
 
-| 任务 | 负责人 | 验收标准 |
-|------|--------|----------|
-| 引入 `ai` + `zod` 依赖 | - | `package.json` 更新，lock 文件同步 |
-| 实现 `LLMClient` | - | 支持 `generate` / `generateObject` / `stream`，可切换 provider |
-| 实现 `AgentLoader` | - | 能读取 `docs/agents/*.md`，解析 YAML + body |
-| 定义核心 Zod Schema（common + scan） | - | 覆盖 `FileManifest`、`ImportMap`、`CodeLocation` |
-| 实现 `repo-scanner` Agent + 调用 | - | 输入仓库路径，输出文件清单（端到端跑通） |
-| CLI `init` 命令 | - | `code-agent init <path>` 可执行，生成 `.repair-agent/` 目录 |
+**实际交付**：项目脚手架 + 核心类型 + `RepoScannerAgent` + `init` CLI
 
-### Phase 2: 核心流水线（Week 3-4）
+| 任务 | 状态 | 实际交付 |
+|------|------|----------|
+| 引入依赖 | ✅ | `commander` / `zod` / `tree-sitter` / `fuse.js` / `vitest` |
+| LLM 服务抽象 | ✅ | `LlmService` 接口 + `TemplateLlmService` |
+| 核心 Zod Schema | ✅ | 全量类型定义含 `parseContext` 验证工具 |
+| `repo-scanner` Agent | ✅ | `RepoScannerAgent` + 扫描器 + Tree-sitter 解析 |
+| CLI `init` 命令 | ✅ | `code-agent init <path>` 生成 `.repair-agent/memory.json` |
+
+**与规划差异**：
+- ❌ 未引入 `ai` SDK，改用各 Provider 原生 SDK + 通用 `HttpLlmService`
+- ❌ 未实现 `AgentLoader`（Markdown 配置化延后）
+
+### Phase 2: 核心流水线 ✅（Week 3-4）
 
 **目标**：7 个 Phase 能串起来跑完一个完整任务
 
-| 任务 | 验收标准 |
-|------|----------|
-| 实现 `PipelineRunner` | 支持顺序执行、Phase 间数据传递、基础错误处理 |
-| 实现 `Fingerprint` 模块（完整版） | 含变更分类、增量决策矩阵、LOAD-PATCH-SAVE |
-| 实现 `fault-detector` + `context-builder` | 能定位故障并召回相关代码 |
-| 实现 `root-cause-analyzer` + `solution-planner` | 输出结构化根因分析和修改方案 |
-| 实现 `patch-generator` | 输出标准 unified diff 格式 |
-| CLI `fix` 命令（基础版） | `code-agent fix "..."` 能跑完流水线并输出生成的 patch |
+**实际交付**：`fix` 命令完整闭环（scan → detect → plan → patch → review → apply）
 
-### Phase 3: 记忆与优化（Week 5-6）
+| 任务 | 状态 | 实际交付 |
+|------|------|----------|
+| Agent 顺序编排 | ✅ | `index.ts` 中直接顺序调用各 Agent |
+| `Fingerprint` 模块 | ✅ | Tree-sitter 解析 + 三级变更分类 + LOAD-PATCH-SAVE |
+| `fault-detector` + `context-builder` | ✅ | 启发式 + LLM 6 种检测模式 + 邻居遍历 |
+| `solution-planner` | ✅ | LLM 生成带 `originalCode`/`modifiedCode` 的方案 |
+| `patch-generator` | ✅ | add/modify/delete + 模糊匹配 + 冲突检测 |
+| CLI `fix` 命令 | ✅ | 完整交互式修复流程 |
+
+**与规划差异**：
+- ❌ 未实现独立 `PipelineRunner` 状态机
+- ✅ `root-cause-analyzer` 功能已集成到 `SolutionPlannerAgent`
+
+### Phase 3: 记忆与优化 ✅（Week 5-6）
 
 **目标**：日常任务 token 消耗降低 80%+
 
-| 任务 | 验收标准 |
-|------|----------|
-| 实现三层记忆架构 | L1/L2/L3 记忆读写正常，数据持久化 |
-| 实现故障传播引擎 | 传播分析结果与手工分析一致（抽样验证） |
-| 实现 Token 预算控制 | 超预算时触发降级策略，有明确提示 |
-| 实现增量同步 `sync` 命令 | `code-agent sync` 只分析变更文件 |
-| Pipeline 中断恢复 | `SIGINT` 后重新执行 `fix`，提示是否恢复 |
+**实际交付**：三层记忆 + 传播引擎 + Token 预算 + 增量同步
 
-### Phase 4: 联网与 Review（Week 7-8）
+| 任务 | 状态 | 实际交付 |
+|------|------|----------|
+| 三层记忆架构 | ✅ | L1 repo + L2 task + L3 learned（结构就绪） |
+| 故障传播引擎 | ✅ | BFS + 31 种边规则 + 概率衰减 + 根因候选 |
+| Token 预算控制 | ✅ | 四级降级 + 分类跟踪 + 模型感知估算 |
+| 增量同步 `sync` | ✅ | `code-agent sync` 自动检测变更并增量更新 |
+| Pipeline 中断恢复 | ⬜ | 未实现（Plan 未持久化到磁盘） |
+
+### Phase 4: 联网与 Review ✅（Week 7-8）
 
 **目标**：复杂问题有外部知识补充，修改有审核流程
 
-| 任务 | 验收标准 |
-|------|----------|
-| 实现联网搜索抽象层 | 支持至少 1 个搜索 provider，结果含可信度评分 |
-| 实现搜索触发策略 | 本地置信度低时自动触发，高时不触发 |
-| 实现结果融合 | 本地知识 + 搜索结果融合输出 |
-| Review 界面（CLI 版） | 展示 diff、影响分析、风险列表，支持 approve/reject/edit |
-| CLI `apply` 命令 | `code-agent apply <plan-id>` 执行 git 操作 |
-| Git 安全策略 | 强制 feature 分支、禁止直接推 main、diff 大小限制 |
+**实际交付**：Web Search 模拟 + LLM Patch 生成 + Review UI
+
+| 任务 | 状态 | 实际交付 |
+|------|------|----------|
+| 联网搜索抽象层 | ✅ | `WebSearchEngine` + 4 种查询模板 + 模拟 provider |
+| 搜索触发策略 | ✅ | localConfidence < 0.5 自动触发 |
+| 结果融合 | ✅ | 加权融合策略（localKnowledge / webSearch / historicalFix） |
+| Review 界面（CLI） | ✅ | diff 展示 + approve/reject + Patch 应用 |
+| LLM Patch 生成 | ✅ | `generatePatch` 全 Provider 支持 |
+| CLI `--web-search` | ✅ | 默认启用，支持 `--no-web-search` 禁用 |
+| Git 自动化 | ⬜ | 未实现（Phase 4 延后） |
+
+**与规划差异**：
+- ✅ Web Search 模块提前完成并集成到 `plan()` 流程
+- ❌ Git 操作（分支/提交/推送）未实现，移至 Phase 4.x
 
 ### Phase 5: 学习与进化（Week 9+，持续）
 
 **目标**：Agent 越用越聪明
 
-| 任务 | 验收标准 |
-|------|----------|
-| 实现 `learn` 命令 | 从历史任务提取故障/修复模式 |
-| 模式复用 | 相似问题优先复用历史模式 |
-| 项目约定学习 | 自动提取代码风格、命名规范 |
-| 性能基准测试 | 建立 token 消耗/耗时基线，防止退化 |
+| 任务 | 状态 | 说明 |
+|------|------|------|
+| `learn` 命令 | ⬜ | 从历史任务提取故障/修复模式 |
+| 模式复用 | ⬜ | 相似问题优先复用历史模式 |
+| 项目约定学习 | ⬜ | 自动提取代码风格、命名规范 |
+| 性能基准测试 | ⬜ | 建立 token 消耗/耗时基线 |
+| 真实 Web Search API | 🔄 | SerpAPI/Tavily/Google 接入（Phase 3.x）|
 
 ---
 
@@ -472,7 +460,7 @@ CLI Commands ──▶ PipelineRunner ──▶ AgentLoader ──▶ LLMClient
 
 | 风险 | 概率 | 影响 | 缓解策略 |
 |------|------|------|----------|
-| `ai` SDK TS 版功能不足 | 中 | 中 | 封装 `LLMClient` 接口，预留直接调用 SDK 的降级路径 |
+| ~~`ai` SDK TS 版功能不足~~ | ✅ **规避** | — | 未引入 `ai` SDK，直接使用各 Provider 原生 SDK + 通用 `HttpLlmService` |
 | LLM 输出不稳定 | 高 | 高 | Zod 校验 + 重试机制 + 人工介入状态 |
 | Tree-sitter WASM 加载问题 | 低 | 高 | 预编译 grammar，CI 中验证加载 |
 | 大仓库性能问题 | 中 | 中 | Fingerprint 跳过 + 传播裁剪 + 分阶段性能测试 |
@@ -483,10 +471,13 @@ CLI Commands ──▶ PipelineRunner ──▶ AgentLoader ──▶ LLMClient
 
 ## 11. 下一步行动
 
-1. **确认本方案** — 用户 review 后如无异议，按 Phase 1 开始实施
-2. **补充 Agent Prompt 定义** — 先写 `repo-scanner.md`，作为端到端测试的锚点
-3. **更新 `package.json`** — 引入 `ai` 和 `zod`
-4. **建立目录结构** — 按 7.1 节创建空目录和 `index.ts` 占位文件
+Phase 1~4 核心功能已完成，当前架构进入稳定期。下一步重点：
+
+1. **评测体系建设** — 端到端测试 + 评测数据集 + 自动化评分
+2. **Plan 持久化** — `.repair-agent/plans/` 目录 + `apply` 从磁盘读取
+3. **真实 Web Search API** — SerpAPI / Tavily / Google 接入
+4. **Git 自动化** — `git checkout -b` / `add` / `commit` / `push` 封装
+5. **架构演进** — `index.ts` 拆分 → `cli/` 目录 + `PipelineRunner` 状态机
 
 ---
 

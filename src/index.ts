@@ -24,6 +24,7 @@ import { TokenBudgetManager } from './core/token-budget.js';
 import { LlmConfigResolver } from './core/llm-config.js';
 import { ModelAwareTokenEstimator } from './core/token-estimator.js';
 import { GitExecutorAgent } from './agents/git-executor-agent.js';
+import { RootCauseAnalyzerAgent } from './agents/root-cause-analyzer-agent.js';
 import type { GitExecutionConfig } from './core/git-executor.js';
 
 export interface AgentConfig {
@@ -177,6 +178,29 @@ export class CodeRepairAgent {
       this.budgetManager.recordUsage('search', Math.ceil(searchTokens / 4));
     }
 
+    // ---- Root Cause Analysis (Phase 2.5) ----
+    const rootCauseAnalyzer = new RootCauseAnalyzerAgent(this.memory, this.llmService);
+    const rootCauseResult = await rootCauseAnalyzer.run({
+      taskId: task.id,
+      instruction: 'Analyze root cause',
+      context: {
+        problem: task.description,
+        findings,
+        codeContext: [],  // Will be loaded by agent from findings
+        searchResults: searchResults.map(r => ({
+          title: r.title,
+          snippet: r.snippet,
+          credibility: r.credibilityScore,
+        })),
+      },
+    });
+
+    const rootCause = rootCauseResult.result.rootCause as string;
+    const severity = rootCauseResult.result.severity as string;
+    const affectedFiles = rootCauseResult.result.affectedFiles as string[];
+
+    this.logger.info(`Root cause: ${rootCause} (severity: ${severity})`);
+
     const planner = new SolutionPlannerAgent(this.memory, this.llmService);
     const plannerResult = await planner.run({
       taskId: task.id,
@@ -184,12 +208,15 @@ export class CodeRepairAgent {
       context: {
         problem: task.description,
         findings,
-        affectedFiles: task.context?.files || [],
+        affectedFiles: affectedFiles.length > 0 ? affectedFiles : (task.context?.files || []),
+        repoPath: '.',
         searchResults: searchResults.map(r => ({
           title: r.title,
           snippet: r.snippet,
           credibility: r.credibilityScore,
         })),
+        rootCause,
+        severity,
       },
     });
 
@@ -205,6 +232,8 @@ export class CodeRepairAgent {
   }
 
   async saveMemory(path: string): Promise<void> {
+    // Sync token budget state into L2 for cross-session tracking
+    this.memory.setTokenBudget(this.budgetManager.getStatus());
     const serialized = this.memory.serialize();
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, serialized, 'utf-8');
@@ -214,6 +243,11 @@ export class CodeRepairAgent {
     try {
       const data = await readFile(path, 'utf-8');
       this.memory = MemoryMiddleware.deserialize(data);
+      // Restore token budget from L2 for cross-session tracking
+      const savedBudget = this.memory.getTokenBudget();
+      if (savedBudget) {
+        this.budgetManager.restoreSnapshot(savedBudget);
+      }
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') {
@@ -226,6 +260,31 @@ export class CodeRepairAgent {
 
   getMemory(): MemoryMiddleware {
     return this.memory;
+  }
+
+  // ---- Plan persistence ----
+
+  async savePlan(plan: SolutionPlan, repoPath: string): Promise<string> {
+    const plansDir = join(resolve(repoPath), '.repair-agent', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    const planPath = join(plansDir, `${plan.id}.json`);
+    await writeFile(planPath, JSON.stringify(plan, null, 2), 'utf-8');
+    return planPath;
+  }
+
+  async loadPlan(planId: string, repoPath: string): Promise<SolutionPlan | null> {
+    const planPath = join(resolve(repoPath), '.repair-agent', 'plans', `${planId}.json`);
+    try {
+      const data = await readFile(planPath, 'utf-8');
+      return JSON.parse(data) as SolutionPlan;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') {
+        this.logger.warn(`Plan not found: ${planId}`);
+        return null;
+      }
+      throw err;
+    }
   }
 
   async applyPatches(patches: FilePatch[]): Promise<{ applied: string[]; failed: string[] }> {
@@ -259,7 +318,7 @@ async function main(): Promise<void> {
   program
     .name('code-agent')
     .description('AI-powered code repair agent')
-    .version('0.1.0');
+    .version('0.4.0');
 
   program
     .command('init')
@@ -318,6 +377,9 @@ async function main(): Promise<void> {
         };
 
         const plan = await agent.plan(task);
+        const planPath = await agent.savePlan(plan, options.repo);
+        await agent.saveMemory(memoryPath);
+
         console.log('\n=== Solution Plan ===\n');
         console.log(`ID: ${plan.id}`);
         console.log(`Problem: ${plan.problem.description}`);
@@ -327,6 +389,7 @@ async function main(): Promise<void> {
           console.log(`  - ${change.filePath}: ${change.description}`);
         }
         console.log(`\nConfidence: ${(plan.metadata.confidence * 100).toFixed(1)}%`);
+        console.log(`\nPlan saved to: ${planPath}`);
       } catch (err) {
         console.error(err);
         process.exit(1);
@@ -415,9 +478,70 @@ async function main(): Promise<void> {
         const memoryPath = join(resolve(options.repo), '.repair-agent', 'memory.json');
         await agent.loadMemory(memoryPath);
 
-        console.log('Apply command: plan ID =', planId);
-        console.log('Dry run:', options.dryRun);
-        console.log('(Full apply flow requires plan persistence - see Phase 4)');
+        // Load persisted plan
+        const plan = await agent.loadPlan(planId, options.repo);
+        if (!plan) {
+          console.error(`Plan not found: ${planId}`);
+          console.error(`Expected at: ${join(resolve(options.repo), '.repair-agent', 'plans', `${planId}.json`)}`);
+          process.exit(1);
+        }
+
+        console.log(`\n=== Applying Plan: ${plan.id} ===`);
+        console.log(`Problem: ${plan.problem.description}`);
+        console.log(`Changes: ${plan.changes.length} file(s)`);
+
+        // Generate patches from plan
+        const patchGenerator = new PatchGeneratorAgent(agent.getMemory());
+        const patchResult = await patchGenerator.run({
+          taskId: plan.taskId,
+          instruction: 'Generate patches for the plan',
+          context: { plan },
+        });
+
+        const patches = patchResult.result.patches as FilePatch[];
+
+        if (options.dryRun) {
+          console.log('\n--- Dry Run (no changes applied) ---');
+          for (const patch of patches) {
+            console.log(formatDiff(patch));
+          }
+          return;
+        }
+
+        // Apply patches
+        const result = await agent.applyPatches(patches);
+        console.log(`\nApplied: ${result.applied.length} file(s)`);
+        if (result.failed.length > 0) {
+          console.log(`Failed: ${result.failed.join(', ')}`);
+          process.exit(1);
+        }
+
+        // Git execution
+        if (result.applied.length > 0) {
+          const gitAgent = new GitExecutorAgent();
+          const gitResult = await gitAgent.run({
+            taskId: `git-${Date.now()}`,
+            instruction: 'Commit and push changes',
+            context: {
+              files: result.applied,
+              description: plan.problem.description,
+            },
+          });
+
+          const gitOutput = gitResult.result as { success: boolean; messages?: string[]; errors?: string[] };
+          if (gitOutput.success) {
+            console.log('\n✅ Git workflow complete');
+            for (const msg of gitOutput.messages || []) {
+              console.log(`  → ${msg}`);
+            }
+          } else {
+            console.log('\n⚠️ Git workflow failed');
+            for (const err of gitOutput.errors || []) {
+              console.log(`  ✗ ${err}`);
+            }
+            process.exit(1);
+          }
+        }
       } catch (err) {
         console.error(err);
         process.exit(1);

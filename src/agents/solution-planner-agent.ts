@@ -17,7 +17,7 @@ export class SolutionPlannerAgent extends BaseAgent {
   }
 
   protected async execute(input: AgentInput): Promise<Record<string, unknown>> {
-    const { problem, findings, affectedFiles, repoPath, searchResults } = parseContext(input.context, solutionPlannerContextSchema);
+    const { problem, findings, affectedFiles, repoPath, searchResults, rootCause, severity } = parseContext(input.context, solutionPlannerContextSchema);
 
     // Phase 1: Build code context for affected files
     const codeContext: Array<{ filePath: string; code: string }> = [];
@@ -87,8 +87,8 @@ export class SolutionPlannerAgent extends BaseAgent {
       taskId: input.taskId,
       problem: {
         description: problem,
-        rootCause: llmResult.rootCause || findings.map(f => f.description).join('; ') || 'Root cause analysis pending',
-        severity: llmResult.severity || 'medium',
+        rootCause: rootCause || llmResult.rootCause || findings.map(f => f.description).join('; ') || 'Root cause analysis pending',
+        severity: (severity as SolutionPlan['problem']['severity']) || llmResult.severity || 'medium',
       },
       changes,
       metadata: {

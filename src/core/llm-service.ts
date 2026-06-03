@@ -10,6 +10,7 @@ const logger = createLogger('llm-service');
  */
 export interface LlmService {
   analyzeFault(params: FaultAnalysisParams): Promise<FaultAnalysisResult>;
+  analyzeRootCause(params: RootCauseAnalysisParams): Promise<RootCauseAnalysisResult>;
   generateSolution(params: SolutionParams): Promise<SolutionResult>;
   generatePatch(params: PatchParams): Promise<PatchLlmResult>;
 }
@@ -30,6 +31,32 @@ export interface FaultAnalysisResult {
     lineHint?: number;
   }>;
   rootCause?: string;
+}
+
+export interface RootCauseAnalysisParams {
+  problem: string;
+  findings: Array<{
+    description: string;
+    confidence: number;
+    filePath?: string;
+    type?: 'bug' | 'performance' | 'security' | 'style';
+  }>;
+  codeContext: Array<{
+    filePath: string;
+    code: string;
+  }>;
+  searchResults?: Array<{
+    title: string;
+    snippet: string;
+    credibility: number;
+  }>;
+}
+
+export interface RootCauseAnalysisResult {
+  rootCause: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  confidence: number;
+  affectedFiles: string[];
 }
 
 export interface SolutionParams {
@@ -278,6 +305,35 @@ export class TemplateLlmService implements LlmService {
     };
   }
 
+  async analyzeRootCause(params: RootCauseAnalysisParams): Promise<RootCauseAnalysisResult> {
+    logger.info(`Analyzing root cause for: ${params.problem}`);
+
+    const hasCritical = params.findings.some(f => f.type === 'security');
+    const hasBug = params.findings.some(f => f.type === 'bug');
+    const severity: RootCauseAnalysisResult['severity'] = hasCritical ? 'critical' : hasBug ? 'high' : 'medium';
+
+    // Build root cause from findings + search results
+    const findingDescriptions = params.findings.map(f => f.description);
+    const searchInsights = (params.searchResults || [])
+      .filter(r => r.credibility > 0.5)
+      .map(r => r.snippet);
+
+    const rootCause = findingDescriptions.length > 0
+      ? `${findingDescriptions.join('; ')}${searchInsights.length > 0 ? ` (supported by external search: ${searchInsights.slice(0, 2).join('; ')})` : ''}`
+      : searchInsights.length > 0
+        ? `External search suggests: ${searchInsights[0]}`
+        : 'No specific root cause identified — manual review recommended';
+
+    const affectedFiles = [...new Set(params.findings.map(f => f.filePath).filter(Boolean))] as string[];
+
+    return {
+      rootCause,
+      severity,
+      confidence: Math.min(0.3 + params.findings.length * 0.15 + (params.searchResults?.length || 0) * 0.05, 0.9),
+      affectedFiles,
+    };
+  }
+
   async generatePatch(params: PatchParams): Promise<PatchLlmResult> {
     logger.info(`Generating patch for ${params.filePath}`);
 
@@ -480,6 +536,56 @@ Respond ONLY with a JSON object in this exact format (no markdown, no explanatio
     }
   }
 
+  async analyzeRootCause(params: RootCauseAnalysisParams): Promise<RootCauseAnalysisResult> {
+    if (!this.client) {
+      logger.info('Anthropic client not available — using template fallback for analyzeRootCause');
+      return this.fallback.analyzeRootCause(params);
+    }
+
+    try {
+      const findingsText = params.findings
+        .map((f, i) => `${i + 1}. [${f.type || 'unknown'}] ${f.description} (confidence: ${f.confidence})`)
+        .join('\n');
+
+      const searchText = (params.searchResults || [])
+        .map(r => `- ${r.title}: ${r.snippet}`)
+        .join('\n');
+
+      const prompt = `You are a root cause analysis expert. Based on the following problem, findings, and external search results, identify the root cause and severity.
+
+Problem: ${params.problem}
+
+Findings:
+${findingsText}
+
+${searchText ? `External search results:\n${searchText}\n\n` : ''}Respond ONLY with a JSON object in this exact format (no markdown, no explanation):
+{
+  "rootCause": "one-sentence root cause analysis",
+  "severity": "low" | "medium" | "high" | "critical",
+  "confidence": 0.0 to 1.0,
+  "affectedFiles": ["file1.ts", "file2.ts"]
+}`;
+
+      const response = await this.client.messages.create({
+        model: this.model,
+        max_tokens: 2048,
+        messages: [{ role: 'user', content: prompt }],
+      });
+
+      const content = response.content[0];
+      if (content.type !== 'text') {
+        throw new Error('Unexpected response type from Claude');
+      }
+
+      const parsed = JSON.parse(content.text) as RootCauseAnalysisResult;
+      logger.info(`Claude root cause: ${parsed.rootCause} (severity: ${parsed.severity})`);
+      return parsed;
+    } catch (err) {
+      logger.error('Claude analyzeRootCause failed, using fallback:', err);
+      return this.fallback.analyzeRootCause(params);
+    }
+  }
+
   async generateSolution(params: SolutionParams): Promise<SolutionResult> {
     if (!this.client) {
       logger.info('Anthropic client not available — using template fallback for generateSolution');
@@ -624,6 +730,19 @@ export class HttpLlmService implements LlmService {
     } catch (err) {
       logger.error(`${this.config.provider} analyzeFault failed, using fallback:`, err);
       return this.fallback.analyzeFault(params);
+    }
+  }
+
+  async analyzeRootCause(params: RootCauseAnalysisParams): Promise<RootCauseAnalysisResult> {
+    if (!this.config.apiKey || !this.baseUrl) {
+      logger.info(`${this.config.provider} not configured — using template fallback`);
+      return this.fallback.analyzeRootCause(params);
+    }
+    try {
+      return await this.callApi('analyzeRootCause', params);
+    } catch (err) {
+      logger.error(`${this.config.provider} analyzeRootCause failed, using fallback:`, err);
+      return this.fallback.analyzeRootCause(params);
     }
   }
 

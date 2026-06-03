@@ -135,7 +135,7 @@ Domestic models (GLM/Kimi/DeepSeek) use lower ratios (~2.5-2.8) because their to
     ↓
 [Context Builder] ──→ Recalled nodes (entry points + propagation results)
     ↓
-[Web Searcher] (Phase 3) ──→ External solutions (conditional)
+[Web Searcher] (Phase 3 ✅) ──→ External solutions (conditional)
     ↓
 [Root Cause Analyzer] ──→ Root cause + severity
     ↓

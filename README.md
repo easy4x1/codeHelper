@@ -2,7 +2,7 @@
 
 > AI-powered code repair agent with fingerprint-based incremental analysis and multi-provider LLM support.
 
-[![Tests](https://img.shields.io/badge/tests-125%2F125%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-144%2F144%20passing-brightgreen)](#testing)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4-blue)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20.0-green)](https://nodejs.org/)
 
@@ -14,6 +14,7 @@
 - **🌊 Fault Propagation Engine** — Trace impact along call chains with probability-weighted BFS traversal
 - **💰 Token Budget Control** — Four-level degradation strategy (reduce_depth → disable_search → core_only → prompt_user)
 - **🌐 Multi-Provider LLM** — Support Anthropic, OpenAI, Moonshot (Kimi), DeepSeek, Zhipu (GLM), with automatic fallback
+- **🔎 Web Search Integration** — Automatic external knowledge lookup when local confidence is low, with memory caching
 - **🔒 API Key Security** — Environment variables → user config → .env, with automatic key masking in logs
 - **📝 Interactive Review Flow** — Generate patches, preview diffs, approve/reject with human-in-the-loop
 
@@ -80,6 +81,9 @@ code-agent plan "Refactor auth module" --provider moonshot --model kimi-k2.5
 
 # Apply an already-reviewed plan
 code-agent apply plan-123
+
+# Disable web search for local-only analysis
+code-agent plan "Fix null pointer" --no-web-search
 ```
 
 ### Incremental Sync
@@ -95,8 +99,8 @@ code-agent sync ./my-project
 | Command | Description | Options |
 |---------|-------------|---------|
 | `init [repo-path]` | Scan repo and build knowledge graph | — |
-| `plan <description>` | Generate repair plan only | `--provider`, `--model`, `--budget`, `--file` |
-| `fix <description>` | Full interactive repair flow | `--provider`, `--model`, `--budget`, `--auto-push`, `--file` |
+| `plan <description>` | Generate repair plan only | `--provider`, `--model`, `--budget`, `--file`, `--web-search` |
+| `fix <description>` | Full interactive repair flow | `--provider`, `--model`, `--budget`, `--auto-push`, `--file`, `--web-search` |
 | `apply <plan-id>` | Apply approved plan non-interactively | `--dry-run` |
 | `sync [repo-path]` | Incremental sync after code changes | `--force-full` |
 | `status [repo-path]` | Show knowledge graph statistics | — |
@@ -159,7 +163,7 @@ npm run dev
 |-------|--------|-------------|
 | Phase 1: MVP | ✅ 100% | Core闭环: scan → detect → plan → patch → review |
 | Phase 2: Memory Optimization | ✅ 100% | Fingerprint, propagation, token budget |
-| Phase 3: Web Enhancement | 🔴 0% | Web search, result fusion |
+| Phase 3: Web Enhancement | ✅ 100% | Web search, result fusion, LLM patch generation |
 | Phase 4: Automation | 🔴 0% | Git automation, CI/CD |
 | Phase 5: Learning | 🔴 0% | Pattern extraction, project conventions |
 

@@ -108,6 +108,16 @@ export class TokenBudgetManager {
     return this.estimator.estimate(text);
   }
 
+  /** Restore budget state from a serialized snapshot (e.g., loaded from MemoryMiddleware). */
+  restoreSnapshot(status: TokenBudgetStatus): void {
+    this.config = {
+      total: status.total,
+      allocated: { ...status.allocated },
+    };
+    this.usageByCategory = { ...status.usageByCategory };
+    this.logger.info('Token budget restored from snapshot');
+  }
+
   /** Backward-compatible static method (uses rough 1:4 estimate). */
   static estimateTokens(text: string): number {
     return Math.ceil(text.length / 4);

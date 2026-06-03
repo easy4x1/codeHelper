@@ -61,15 +61,15 @@
 | 修改控制 | 必须人工 Review | 安全约束，不可绕过 |
 | 输出格式 | Markdown 方案 + diff 补丁 | 人类可读 + 机器可执行 |
 
-### 3.2 待决策项
+### 3.2 已确定的决策
 
-| 项 | 选项 | 建议 |
+| 项 | 选择 | 理由 |
 |----|------|------|
-| 实现语言 | TypeScript / Python / Go | **TypeScript**（与 UA 一致，便于复用） |
-| 部署方式 | CLI / Web / IDE Plugin | 先 CLI，再扩展 |
-| 联网搜索 | Google API / Bing / 自建 | 抽象接口，支持多源 |
-| 向量嵌入 | OpenAI / local / 混合 | 优先 local（节省 token） |
-| Git 平台 | GitHub / GitLab / 通用 | 抽象 Git 操作层 |
+| 实现语言 | **TypeScript** | 与 UA 一致，便于复用代码结构 |
+| 部署方式 | **CLI**（未来可扩展 Web/IDE） | 先验证核心闭环，再扩展交互形态 |
+| 联网搜索 | **抽象接口 + 模拟 Provider** | `WebSearchEngine` 支持多源，当前为模拟实现，预留真实 API 接入点 |
+| 向量嵌入 | **暂不实现** | 当前基于图谱邻居 + 故障传播已满足需求，Phase 5 再评估 |
+| Git 平台 | **抽象 Git 操作层** | Phase 4 实现通用 Git 自动化，不限定平台 |
 
 ---
 
@@ -100,29 +100,34 @@
 ├── DESIGN.md          # 系统设计方案（主文档）
 ├── KEY-FINDINGS.md    # UA 深度分析关键发现
 ├── CONTEXT.md         # 本文件（上下文摘要）
-└── docs/              # 详细文档目录（待创建）
-    ├── ARCHITECTURE.md
-    ├── AGENTS.md
-    ├── API.md
-    └── DEPLOYMENT.md
+├── PROGRESS.md        # 实现进度报告（随迭代更新）
+├── README.md          # 项目入口文档
+└── docs/              # 详细文档目录
+    ├── ARCHITECTURE.md  # 系统架构详解
+    ├── API.md           # CLI 与程序化 API 参考
+    ├── ENGINEERING-PLAN.md  # 工程实施计划
+    ├── TECH-PLAN.md     # 技术选型与实现方案
+    └── superpowers/     # AI 辅助开发计划
 ```
 
 ---
 
 ## 5. 后续行动
 
-### 5.1 等待用户决策
+### 5.1 已完成的里程碑
 
-- [ ] 确认实现语言（建议 TypeScript）
-- [ ] 确认第一阶段范围（建议 MVP：核心闭环）
-- [ ] 确认目标仓库（用于开发和测试）
+| 阶段 | 状态 | 关键交付 |
+|------|------|---------|
+| Phase 1: MVP | ✅ 完成 | 核心闭环（scan → detect → plan → patch → review）|
+| Phase 2: Memory Optimization | ✅ 完成 | Fingerprint 增量、故障传播裁剪、Token 预算 |
+| Phase 3: Web Enhancement | ✅ 完成 | Web Search、LLM Patch 生成、结果融合 |
 
-### 5.2 下一步工作
+### 5.2 下一步工作（按优先级）
 
-1. 创建详细的 Agent Prompt 定义（参考 UA 的 Markdown 格式）
-2. 设计知识图谱的扩展类型（增加 fault/fix/pattern 节点）
-3. 实现 Fingerprint 模块的核心逻辑
-4. 搭建项目脚手架和 CI/CD
+1. **Phase 3.x: 真实 Web Search API 接入** — Google/Bing 等真实搜索 provider
+2. **Phase 4: Git 自动化** — 分支创建、提交、推送、PR 自动化
+3. **Phase 5: 学习进化** — 历史任务模式提取、项目约定学习
+4. **CI/CD 搭建** — 自动化测试、发布流程
 
 ---
 

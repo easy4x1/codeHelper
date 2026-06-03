@@ -6,6 +6,7 @@ import type {
   KnowledgeGraph,
   FileFingerprint,
   Finding,
+  TokenBudgetStatus,
 } from './types.js';
 
 const DEFAULT_REPO_MEMORY: RepoMemory = {
@@ -113,6 +114,17 @@ export class MemoryMiddleware {
 
   addFinding(finding: Finding): void {
     this.taskContext.findings.push(finding);
+  }
+
+  // Token Budget (L2 — cross-session tracking)
+  getTokenBudget(): TokenBudgetStatus | undefined {
+    return this.taskContext.tokenBudget
+      ? JSON.parse(JSON.stringify(this.taskContext.tokenBudget))
+      : undefined;
+  }
+
+  setTokenBudget(status: TokenBudgetStatus): void {
+    this.taskContext.tokenBudget = JSON.parse(JSON.stringify(status));
   }
 
   // Learned Memory (L3)

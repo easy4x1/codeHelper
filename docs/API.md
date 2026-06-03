@@ -45,6 +45,8 @@ code-agent plan "Fix null pointer in auth module" \
 | `--provider <name>` | `template` | LLM provider |
 | `--model <name>` | provider default | Model name |
 | `--budget <tokens>` | `50000` | Total token budget |
+| `--web-search` | `true` | Enable web search (auto-triggered when local confidence < 0.5) |
+| `--no-web-search` | `false` | Disable web search for local-only analysis |
 
 **Output**:
 ```

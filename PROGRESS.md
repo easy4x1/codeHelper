@@ -13,10 +13,10 @@
 | Phase 1: MVP（核心闭环）| 核心 Agent + CLI + 基础图谱 + Patch/Review 流程 | **100%** |
 | Phase 2: 记忆优化 | Fingerprint 增量、传播裁剪、Token 预算 | **100%** |
 | Phase 3: 联网增强 | Web Search、结果融合、LLM Patch 生成 | **100%** |
-| Phase 4: 自动化与集成 | Git 自动化、CI/CD | **0%** |
+| Phase 4: 自动化与集成 | Git 自动化、CI/CD | **~40%** |
 | Phase 5: 学习与进化 | 模式提取、项目约定学习 | **0%** |
 
-**整体完成度: ~85%**
+**整体完成度: ~88%**
 
 ---
 
@@ -30,7 +30,7 @@
 | `fault-detector` | 定位代码中的问题点 | ✅ **LLM 增强** | 启发式 + `TemplateLlmService` 语义分析（6 种检测模式） |
 | `context-builder` | 召回与问题相关的代码上下文 | ✅ **已完成** | `ContextBuilderAgent` 实现，基于知识图谱邻居遍历 |
 | `web-searcher` | 联网搜索解决方案 | ✅ **已完成** | `WebSearcherAgent` + `WebSearchEngine` + 模拟搜索 provider |
-| `root-cause-analyzer` | 综合分析，定位根因 | ⚠️ **部分完成** | `SolutionPlannerAgent` 集成 LLM 生成根因分析 |
+| `root-cause-analyzer` | 综合分析，定位根因 | ✅ **已完成** | 独立 `RootCauseAnalyzerAgent`，职责从 `SolutionPlannerAgent` 分离 |
 | `solution-planner` | 输出结构化修改方案 | ✅ **LLM 增强** | 生成带 `originalCode`/`modifiedCode` 的深度方案 |
 | `patch-generator` | 将方案转换为具体代码 diff | ✅ **已完成** | `PatchGeneratorAgent` 实现，支持 add/modify/delete |
 | `git-executor` | 执行 git 操作 | ✅ **已完成** | `GitExecutor` + `GitExecutorAgent`，分支创建/提交/推送 |
@@ -293,7 +293,8 @@
 | **`tests/web-searcher-agent.test.ts`** | **3** | **WebSearcherAgent 集成** |
 | **`tests/patch-llm.test.ts`** | **3** | **LLM generatePatch（Template + Anthropic）** |
 | **`tests/git-executor.test.ts`** | **4** | **GitExecutor 配置 + 安全策略** |
-| **总计** | **152** | **19 个模块** |
+| **`tests/root-cause-analyzer-agent.test.ts`** | **4** | **RootCauseAnalyzerAgent 根因分析** |
+| **总计** | **156** | **20 个模块** |
 
 ---
 
@@ -347,6 +348,12 @@
 16. **CLI `--web-search`** — 默认启用，支持 `--no-web-search` 禁用
 17. **Git 自动化** — `GitExecutor` + `GitExecutorAgent`，分支创建/提交/推送
 18. **Git 安全策略** — 禁止直接修改 protected branch，自动创建 feature 分支
+19. **TokenBudget 跨会话持久化** — `TokenBudgetManager` 状态接入 `MemoryMiddleware` L2
+20. **Git SafetyNet** — Pre-commit 自动检查（syntax/test/lint/diff size/file count）
+21. **Plan 持久化与 apply 命令** — `.repair-agent/plans/` 存储 + `code-agent apply <plan-id>` 完整实现
+22. **CLI 版本号同步** — `0.1.0` → `0.4.0`
+23. **`RootCauseAnalyzerAgent` 独立化** — 根因分析从 `SolutionPlannerAgent` 抽离为独立 Agent，职责分离
+24. **`LlmService.analyzeRootCause`** — 全 Provider 支持（Template/Anthropic/HTTP）
 
 ### 6.2 剩余重要工作（按优先级）
 
@@ -355,7 +362,8 @@
 | 🟡 中 | **~~联网搜索模块~~** | ~~Web Search API 接入~~ | ✅ **已完成 — 模拟 provider + CLI 集成** |
 | 🟡 中 | **~~Patch 生成器增强~~** | ~~LLM 生成可执行代码 diff~~ | ✅ **已完成 — 全 Provider 支持** |
 | 🟢 低 | **~~真实 Web Search API~~** | ~~接入 Google/Bing 等真实搜索 API~~ | ✅ **已完成 — DuckDuckGo（无需 API key）** |
-| 🟢 低 | **~~Git 自动化~~** | ~~分支/提交/推送/PR 创建~~ | ✅ **已完成 — GitExecutor + 安全分支策略** |
+| 🟢 低 | **~~Git 自动化~~** | ~~分支/提交/推送/PR 创建~~ | ✅ **已完成 — GitExecutor + SafetyNet + 安全分支策略** |
+| 🟢 低 | **Plan 持久化** | `code-agent apply <plan-id>` 完整实现 | ✅ **已完成 — plan 保存/加载/应用闭环** |
 | 🟢 低 | **学习进化** | 历史任务模式提取 | Phase 5 |
 
 ### 6.3 技术债
@@ -408,7 +416,7 @@ src/
     ├── logger.ts                  36 行  (日志)
     └── hash.ts                     5 行  (哈希)
 
-总计: ~3,750 行代码 + **152** 个测试（**19** 个测试文件）
+总计: ~3,900 行代码 + **156** 个测试（**20** 个测试文件）
 ```
 
 ---

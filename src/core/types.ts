@@ -146,6 +146,8 @@ export interface TaskContext {
   recalledNodes: GraphNode[];
   findings: Finding[];
   searchCache?: Array<{ title: string; url: string; snippet: string; credibilityScore: number }>;
+  /** Token budget status for cross-session tracking (DESIGN.md 3.2.1) */
+  tokenBudget?: TokenBudgetStatus;
 }
 
 export interface Finding {
@@ -418,6 +420,21 @@ export const contextBuilderContextSchema = z.object({
   nodeIds: z.array(z.string()),
 });
 
+export const rootCauseAnalyzerContextSchema = z.object({
+  problem: z.string(),
+  findings: z.array(findingSchema).optional().default([]),
+  codeContext: z.array(z.object({
+    filePath: z.string(),
+    code: z.string(),
+  })).optional().default([]),
+  searchResults: z.array(z.object({
+    title: z.string(),
+    snippet: z.string(),
+    credibility: z.number(),
+  })).optional().default([]),
+  propagationResult: z.record(z.string(), z.unknown()).optional(),
+});
+
 export const solutionPlannerContextSchema = z.object({
   problem: z.string(),
   findings: z.array(findingSchema).optional().default([]),
@@ -428,6 +445,8 @@ export const solutionPlannerContextSchema = z.object({
     snippet: z.string(),
     credibility: z.number(),
   })).optional().default([]),
+  rootCause: z.string().optional().default('Root cause analysis pending'),
+  severity: z.string().optional().default('medium'),
 });
 
 export const patchGeneratorContextSchema = z.object({
