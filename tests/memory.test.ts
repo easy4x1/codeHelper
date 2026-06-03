@@ -67,3 +67,132 @@ describe('MemoryMiddleware', () => {
     expect(restored.getTaskContext().taskId).toBe('task-1');
   });
 });
+
+describe('LearnedMemory (L3) — Phase 5', () => {
+  it('records a completed task', () => {
+    const memory = new MemoryMiddleware();
+    memory.recordTask({
+      taskId: 'task-1',
+      description: 'Fix null dereference',
+      timestamp: new Date().toISOString(),
+      filesAnalyzed: ['src/auth.ts'],
+      findingsCount: 2,
+      success: true,
+    });
+    const learned = memory.getLearnedMemory();
+    expect(learned.taskHistory).toHaveLength(1);
+    expect(learned.taskHistory[0].description).toBe('Fix null dereference');
+  });
+
+  it('extracts and stores fault patterns', () => {
+    const memory = new MemoryMiddleware();
+    memory.addFaultPattern({
+      id: 'fp-null-deref',
+      pattern: 'Potential null/undefined dereference',
+      language: 'typescript',
+      frequency: 1,
+    });
+    const learned = memory.getLearnedMemory();
+    expect(learned.faultPatterns).toHaveLength(1);
+    expect(learned.faultPatterns[0].frequency).toBe(1);
+  });
+
+  it('increments frequency for existing fault patterns', () => {
+    const memory = new MemoryMiddleware();
+    memory.addFaultPattern({ id: 'fp-1', pattern: 'Unused variable', frequency: 1 });
+    memory.addFaultPattern({ id: 'fp-1', pattern: 'Unused variable', frequency: 1 });
+    const learned = memory.getLearnedMemory();
+    expect(learned.faultPatterns[0].frequency).toBe(2);
+  });
+
+  it('increments frequency for existing fix patterns', () => {
+    const memory = new MemoryMiddleware();
+    memory.addFixPattern({ id: 'fix-1', pattern: 'Add optional chaining', frequency: 1 });
+    memory.addFixPattern({ id: 'fix-1', pattern: 'Add optional chaining', frequency: 2 });
+    const learned = memory.getLearnedMemory();
+    expect(learned.fixPatterns[0].frequency).toBe(3);
+  });
+
+  it('stores project conventions', () => {
+    const memory = new MemoryMiddleware();
+    memory.addConvention({
+      id: 'conv-1',
+      category: 'naming',
+      rule: 'Functions use camelCase',
+      examples: ['getUserName', 'fetchData'],
+      confidence: 0.9,
+    });
+    const learned = memory.getLearnedMemory();
+    expect(learned.projectConventions).toHaveLength(1);
+    expect(learned.projectConventions[0].category).toBe('naming');
+  });
+
+  it('boosts confidence for duplicate conventions', () => {
+    const memory = new MemoryMiddleware();
+    memory.addConvention({
+      id: 'conv-1',
+      category: 'naming',
+      rule: 'Functions use camelCase',
+      examples: ['getUserName'],
+      confidence: 0.5,
+    });
+    memory.addConvention({
+      id: 'conv-2',
+      category: 'naming',
+      rule: 'Functions use camelCase',
+      examples: ['fetchData'],
+      confidence: 0.6,
+    });
+    const learned = memory.getLearnedMemory();
+    expect(learned.projectConventions).toHaveLength(1);
+    expect(learned.projectConventions[0].confidence).toBeCloseTo(0.6, 1);
+  });
+
+  it('filters conventions by category', () => {
+    const memory = new MemoryMiddleware();
+    memory.addConvention({
+      id: 'conv-1',
+      category: 'naming',
+      rule: 'Functions use camelCase',
+      examples: ['getUserName'],
+      confidence: 0.9,
+    });
+    memory.addConvention({
+      id: 'conv-2',
+      category: 'testing',
+      rule: 'Tests use .test.ts suffix',
+      examples: ['auth.test.ts'],
+      confidence: 0.8,
+    });
+    const namingConventions = memory.getConventions('naming');
+    expect(namingConventions).toHaveLength(1);
+    expect(namingConventions[0].category).toBe('naming');
+    expect(memory.getConventions()).toHaveLength(2);
+  });
+
+  it('returns deep copies from getTaskHistory and getConventions', () => {
+    const memory = new MemoryMiddleware();
+    memory.recordTask({
+      taskId: 'task-1',
+      description: 'Fix bug',
+      timestamp: new Date().toISOString(),
+      filesAnalyzed: ['src/a.ts'],
+      findingsCount: 1,
+    });
+    memory.addConvention({
+      id: 'conv-1',
+      category: 'style',
+      rule: 'Use single quotes',
+      examples: ["'hello'"],
+      confidence: 0.7,
+    });
+
+    const history = memory.getTaskHistory();
+    history[0].description = 'Mutated';
+    expect(memory.getTaskHistory()[0].description).toBe('Fix bug');
+
+    const conventions = memory.getConventions();
+    conventions[0].rule = 'Mutated';
+    expect(memory.getConventions()[0].rule).toBe('Use single quotes');
+  });
+});

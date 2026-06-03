@@ -162,6 +162,7 @@ export interface LearnedMemory {
   taskHistory: TaskRecord[];
   faultPatterns: FaultPattern[];
   fixPatterns: FixPattern[];
+  projectConventions: Convention[];
 }
 
 export interface TaskRecord {
@@ -170,6 +171,7 @@ export interface TaskRecord {
   timestamp: string;
   filesAnalyzed: string[];
   findingsCount: number;
+  success?: boolean;
 }
 
 export interface FaultPattern {
@@ -184,6 +186,15 @@ export interface FixPattern {
   pattern: string;
   language?: string;
   frequency: number;
+}
+
+export interface Convention {
+  id: string;
+  category: 'naming' | 'style' | 'architecture' | 'testing' | 'documentation';
+  rule: string;
+  examples: string[];
+  confidence: number; // 0-1
+  source?: string; // file path or taskId that originated this convention
 }
 
 export interface MemoryLayer {

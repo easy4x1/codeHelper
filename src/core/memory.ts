@@ -7,6 +7,10 @@ import type {
   FileFingerprint,
   Finding,
   TokenBudgetStatus,
+  TaskRecord,
+  FaultPattern,
+  FixPattern,
+  Convention,
 } from './types.js';
 
 const DEFAULT_REPO_MEMORY: RepoMemory = {
@@ -27,6 +31,7 @@ const DEFAULT_LEARNED_MEMORY: LearnedMemory = {
   taskHistory: [],
   faultPatterns: [],
   fixPatterns: [],
+  projectConventions: [],
 };
 
 export class MemoryMiddleware {
@@ -39,7 +44,9 @@ export class MemoryMiddleware {
     this.taskContext = layer?.taskContext
       ? { ...layer.taskContext, analyzedFiles: new Set(layer.taskContext.analyzedFiles) }
       : { ...DEFAULT_TASK_CONTEXT };
-    this.learnedMemory = layer?.learnedMemory ? { ...layer.learnedMemory } : { ...DEFAULT_LEARNED_MEMORY };
+    this.learnedMemory = layer?.learnedMemory
+      ? JSON.parse(JSON.stringify(layer.learnedMemory))
+      : { ...DEFAULT_LEARNED_MEMORY, taskHistory: [], faultPatterns: [], fixPatterns: [], projectConventions: [] };
   }
 
   // Repo Memory (L1)
@@ -130,6 +137,58 @@ export class MemoryMiddleware {
   // Learned Memory (L3)
   getLearnedMemory(): LearnedMemory {
     return JSON.parse(JSON.stringify(this.learnedMemory));
+  }
+
+  // ---- Task History ----
+
+  recordTask(record: TaskRecord & { success?: boolean }): void {
+    this.learnedMemory.taskHistory.push({
+      ...record,
+      timestamp: record.timestamp || new Date().toISOString(),
+    });
+  }
+
+  getTaskHistory(): TaskRecord[] {
+    return JSON.parse(JSON.stringify(this.learnedMemory.taskHistory));
+  }
+
+  // ---- Pattern Library ----
+
+  addFaultPattern(pattern: FaultPattern): void {
+    const existing = this.learnedMemory.faultPatterns.find(p => p.id === pattern.id);
+    if (existing) {
+      existing.frequency += pattern.frequency;
+    } else {
+      this.learnedMemory.faultPatterns.push({ ...pattern });
+    }
+  }
+
+  addFixPattern(pattern: FixPattern): void {
+    const existing = this.learnedMemory.fixPatterns.find(p => p.id === pattern.id);
+    if (existing) {
+      existing.frequency += pattern.frequency;
+    } else {
+      this.learnedMemory.fixPatterns.push({ ...pattern });
+    }
+  }
+
+  // ---- Project Conventions ----
+
+  addConvention(convention: Convention): void {
+    const existing = this.learnedMemory.projectConventions.find(
+      c => c.category === convention.category && c.rule === convention.rule
+    );
+    if (existing) {
+      // Increase confidence with additional evidence
+      existing.confidence = Math.min(1, existing.confidence + 0.1);
+    } else {
+      this.learnedMemory.projectConventions.push({ ...convention });
+    }
+  }
+
+  getConventions(category?: Convention['category']): Convention[] {
+    const conventions = JSON.parse(JSON.stringify(this.learnedMemory.projectConventions));
+    return category ? conventions.filter((c: Convention) => c.category === category) : conventions;
   }
 
   // Serialization
