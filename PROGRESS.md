@@ -13,7 +13,7 @@
 | Phase 1: MVP（核心闭环）| 核心 Agent + CLI + 基础图谱 + Patch/Review 流程 | **100%** |
 | Phase 2: 记忆优化 | Fingerprint 增量、传播裁剪、Token 预算 | **100%** |
 | Phase 3: 联网增强 | Web Search、结果融合、LLM Patch 生成 | **100%** |
-| Phase 4: 自动化与集成 | Git 自动化、CI/CD | **~40%** |
+| Phase 4: 自动化与集成 | Git 自动化、CI/CD、批量任务 | **核心完成 (~70%)** |
 | Phase 5: 学习与进化 | 模式提取、项目约定学习 | **0%** |
 
 **整体完成度: ~88%**
@@ -354,6 +354,9 @@
 22. **CLI 版本号同步** — `0.1.0` → `0.4.0`
 23. **`RootCauseAnalyzerAgent` 独立化** — 根因分析从 `SolutionPlannerAgent` 抽离为独立 Agent，职责分离
 24. **`LlmService.analyzeRootCause`** — 全 Provider 支持（Template/Anthropic/HTTP）
+25. **GitHub Actions CI** — `.github/workflows/ci.yml`，Node 20/22 矩阵，测试 + 构建
+26. **`code-agent batch`** — 批量任务处理（JSON 任务列表，顺序/并行模式，autoPush 支持）
+27. **package.json 版本同步** — `0.2.0` → `0.4.0`
 
 ### 6.2 剩余重要工作（按优先级）
 
@@ -416,7 +419,7 @@ src/
     ├── logger.ts                  36 行  (日志)
     └── hash.ts                     5 行  (哈希)
 
-总计: ~3,900 行代码 + **156** 个测试（**20** 个测试文件）
+总计: ~4,200 行代码 + **161** 个测试（**21** 个测试文件）
 ```
 
 ---

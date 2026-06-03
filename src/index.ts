@@ -675,6 +675,151 @@ async function main(): Promise<void> {
       }
     });
 
+  program
+    .command('batch')
+    .description('Batch process multiple repair tasks from a JSON file')
+    .argument('<tasks-file>', 'Path to batch tasks JSON file')
+    .option('-r, --repo <path>', 'Repository path', '.')
+    .option('--auto-push', 'Automatically apply all without confirmation', false)
+    .option('--llm <provider>', 'LLM provider: anthropic | template', 'template')
+    .option('--budget <tokens>', 'Total token budget per task', '50000')
+    .option('--web-search', 'Enable web search', true)
+    .option('--no-web-search', 'Disable web search')
+    .option('--parallel', 'Run tasks in parallel (experimental)', false)
+    .action(async (tasksFile: string, options: {
+      repo: string;
+      autoPush: boolean;
+      llm: string;
+      budget: string;
+      webSearch: boolean;
+      parallel: boolean;
+    }) => {
+      try {
+        const batchData = JSON.parse(await readFile(resolve(tasksFile), 'utf-8')) as {
+          tasks: Array<{ description: string; files?: string[] }>;
+          options?: { parallel?: boolean; autoPush?: boolean; webSearch?: boolean };
+        };
+
+        if (!Array.isArray(batchData.tasks) || batchData.tasks.length === 0) {
+          console.error('Invalid batch file: tasks array required');
+          process.exit(1);
+        }
+
+        const llmService = options.llm === 'anthropic' ? 'anthropic' as const : 'template' as const;
+        const total = parseInt(options.budget, 10);
+        const autoPush = options.autoPush || batchData.options?.autoPush || false;
+        const webSearch = options.webSearch !== false && batchData.options?.webSearch !== false;
+        const parallel = options.parallel || batchData.options?.parallel || false;
+
+        console.log(`\n=== Batch Processing: ${batchData.tasks.length} task(s) ===`);
+        console.log(`Mode: ${parallel ? 'parallel' : 'sequential'}`);
+        console.log(`Auto-push: ${autoPush}`);
+        console.log(`Web search: ${webSearch}\n`);
+
+        const results: Array<{ task: string; success: boolean; planId?: string; error?: string }> = [];
+
+        const processTask = async (taskDesc: string, files: string[], index: number): Promise<void> => {
+          const taskId = `batch-${Date.now()}-${index}`;
+          console.log(`\n[${index + 1}/${batchData.tasks.length}] ${taskDesc}`);
+
+          try {
+            const agent = new CodeRepairAgent({
+              verbose: true,
+              llmService,
+              webSearch,
+              tokenBudget: {
+                total,
+                analysis: Math.floor(total * 0.4),
+                planning: Math.floor(total * 0.3),
+                search: Math.floor(total * 0.2),
+                review: Math.floor(total * 0.1),
+              },
+            });
+
+            const memoryPath = join(resolve(options.repo), '.repair-agent', 'memory.json');
+            await agent.loadMemory(memoryPath);
+
+            const task: RepairTask = {
+              id: taskId,
+              description: taskDesc,
+              type: 'bug',
+              priority: 'medium',
+              context: { files: files.length > 0 ? files : undefined },
+            };
+
+            const plan = await agent.plan(task);
+            const planPath = await agent.savePlan(plan, options.repo);
+            await agent.saveMemory(memoryPath);
+
+            console.log(`  Plan: ${plan.id} (${plan.changes.length} change(s))`);
+
+            if (autoPush) {
+              // Auto-apply: load plan → patch → apply → git
+              const loadedPlan = await agent.loadPlan(plan.id, options.repo);
+              if (!loadedPlan) {
+                throw new Error(`Failed to load plan: ${plan.id}`);
+              }
+
+              const patchGenerator = new PatchGeneratorAgent(agent.getMemory());
+              const patchResult = await patchGenerator.run({
+                taskId,
+                instruction: 'Generate patches',
+                context: { plan: loadedPlan },
+              });
+
+              const patches = patchResult.result.patches as FilePatch[];
+              const applyResult = await agent.applyPatches(patches);
+
+              if (applyResult.applied.length > 0) {
+                const gitAgent = new GitExecutorAgent();
+                await gitAgent.run({
+                  taskId: `git-${Date.now()}`,
+                  instruction: 'Commit batch changes',
+                  context: {
+                    files: applyResult.applied,
+                    description: taskDesc,
+                  },
+                });
+                console.log(`  ✅ Applied + committed`);
+              }
+            } else {
+              console.log(`  💾 Plan saved. Apply with: code-agent apply ${plan.id}`);
+            }
+
+            results.push({ task: taskDesc, success: true, planId: plan.id });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.log(`  ❌ Failed: ${msg}`);
+            results.push({ task: taskDesc, success: false, error: msg });
+          }
+        };
+
+        if (parallel) {
+          await Promise.all(batchData.tasks.map((t, i) => processTask(t.description, t.files || [], i)));
+        } else {
+          for (let i = 0; i < batchData.tasks.length; i++) {
+            await processTask(batchData.tasks[i].description, batchData.tasks[i].files || [], i);
+          }
+        }
+
+        // Summary
+        console.log('\n=== Batch Summary ===');
+        const succeeded = results.filter(r => r.success).length;
+        console.log(`Success: ${succeeded}/${results.length}`);
+        for (const r of results) {
+          const icon = r.success ? '✅' : '❌';
+          console.log(`  ${icon} ${r.task}${r.planId ? ` → ${r.planId}` : ''}`);
+        }
+
+        if (succeeded < results.length) {
+          process.exit(1);
+        }
+      } catch (err) {
+        console.error(err);
+        process.exit(1);
+      }
+    });
+
   await program.parseAsync();
 }
 
