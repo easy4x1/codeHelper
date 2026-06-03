@@ -13,19 +13,19 @@ const fixturePath = join(__dirname, 'fixtures', 'sample-repo');
 
 describe('CodeRepairAgent', () => {
   it('initializes with config', () => {
-    const agent = new CodeRepairAgent({ verbose: true });
+    const agent = new CodeRepairAgent({ verbose: true, provider: 'template' });
     expect(agent).toBeDefined();
   });
 
   it('initializes a repo', async () => {
-    const agent = new CodeRepairAgent({});
+    const agent = new CodeRepairAgent({ provider: 'template' });
     const result = await agent.init(fixturePath);
     expect(result.files).toBeDefined();
     expect(result.files.length).toBeGreaterThan(0);
   });
 
   it('plans a repair task', async () => {
-    const agent = new CodeRepairAgent({});
+    const agent = new CodeRepairAgent({ provider: 'template' });
     await agent.init(fixturePath);
 
     const plan = await agent.plan({
@@ -41,7 +41,7 @@ describe('CodeRepairAgent', () => {
   });
 
   it('serializes memory to disk', async () => {
-    const agent = new CodeRepairAgent({});
+    const agent = new CodeRepairAgent({ provider: 'template' });
     await agent.init(fixturePath);
     await agent.saveMemory('/tmp/test-memory.json');
     // Just verify no error thrown
@@ -49,12 +49,12 @@ describe('CodeRepairAgent', () => {
   });
 
   it('deserializes memory from disk', async () => {
-    const agent = new CodeRepairAgent({});
+    const agent = new CodeRepairAgent({ provider: 'template' });
     await agent.init(fixturePath);
     const memoryPath = '/tmp/test-memory-load.json';
     await agent.saveMemory(memoryPath);
 
-    const agent2 = new CodeRepairAgent({});
+    const agent2 = new CodeRepairAgent({ provider: 'template' });
     await agent2.loadMemory(memoryPath);
     const fingerprints = agent2.getMemory().getAllFingerprints();
     expect(Object.keys(fingerprints).length).toBeGreaterThan(0);
@@ -63,7 +63,7 @@ describe('CodeRepairAgent', () => {
 
 describe('CodeRepairAgent apply', () => {
   it('applies patches to files', async () => {
-    const agent = new CodeRepairAgent({});
+    const agent = new CodeRepairAgent({ provider: 'template' });
     await agent.init(fixturePath);
 
     const patch = generatePatch(
@@ -80,7 +80,7 @@ describe('CodeRepairAgent apply', () => {
 
 describe('CodeRepairAgent token budget', () => {
   it('initializes with default budget', () => {
-    const agent = new CodeRepairAgent({});
+    const agent = new CodeRepairAgent({ provider: 'template' });
     const status = agent.getBudgetManager().getStatus();
     expect(status.total).toBe(50000);
   });
@@ -94,7 +94,7 @@ describe('CodeRepairAgent token budget', () => {
   });
 
   it('tracks token usage during plan', async () => {
-    const agent = new CodeRepairAgent({ verbose: true });
+    const agent = new CodeRepairAgent({ verbose: true, provider: 'template' });
     await agent.init(fixturePath);
 
     const before = agent.getBudgetManager().getStatus();
@@ -167,7 +167,7 @@ describe('CLI --budget option', () => {
 
 describe('Semantic cache integration', () => {
   it('returns cached plan for similar task descriptions', async () => {
-    const agent = new CodeRepairAgent({});
+    const agent = new CodeRepairAgent({ provider: 'template' });
 
     // First plan — triggers analysis
     const plan1 = await agent.plan({

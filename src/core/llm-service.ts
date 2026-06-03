@@ -449,6 +449,25 @@ export class AnthropicLlmService implements LlmService {
   private model = 'claude-sonnet-4-6-20251001';
   private baseUrl?: string;
 
+  /**
+   * Extract JSON from LLM response text.
+   * Some providers (e.g. kimi) wrap JSON in markdown code blocks (```json ... ```).
+   * This strips the wrapper before parsing.
+   */
+  private extractJson(text: string): unknown {
+    const trimmed = text.trim();
+    // Strip markdown code block if present
+    if (trimmed.startsWith('```')) {
+      const lines = trimmed.split('\n');
+      // Remove first line (```json or ```)
+      if (lines[0].startsWith('```')) lines.shift();
+      // Remove last line (```)
+      if (lines[lines.length - 1].trim() === '```') lines.pop();
+      return JSON.parse(lines.join('\n'));
+    }
+    return JSON.parse(trimmed);
+  }
+
   constructor(config?: LlmProviderConfig) {
     const apiKey = config?.apiKey ?? process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
@@ -527,7 +546,7 @@ Respond ONLY with a JSON object in this exact format (no markdown, no explanatio
         throw new Error('Unexpected response type from Claude');
       }
 
-      const parsed = JSON.parse(content.text) as FaultAnalysisResult;
+      const parsed = this.extractJson(content.text) as FaultAnalysisResult;
       logger.info(`Claude found ${parsed.findings.length} issue(s) in ${params.filePath}`);
       return parsed;
     } catch (err) {

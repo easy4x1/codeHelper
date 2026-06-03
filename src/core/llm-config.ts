@@ -108,12 +108,30 @@ export class LlmConfigResolver {
    * Resolve LLM configuration from secure sources.
    *
    * Priority:
-   *   1. Environment variables (ANTHROPIC_API_KEY, etc.)
-   *   2. ~/.code-agent/config.yaml
-   *   3. Template fallback (no API key needed)
+   *   1. Explicit provider hint (if given)
+   *   2. Auto-detect from environment variables (anthropic → openai → moonshot → deepseek → zhipu)
+   *   3. ~/.code-agent/config.yaml
+   *   4. Template fallback (no API key needed)
    */
   resolve(providerHint?: string, modelHint?: string): ResolvedConfig | null {
     const provider = this.normalizeProvider(providerHint);
+
+    // If no hint given, auto-detect available API keys
+    if (!providerHint) {
+      const detected = this.autoDetectProvider();
+      if (detected) {
+        logger.info(`Auto-detected ${detected.provider} API key from environment`);
+        return {
+          config: this.buildConfig(detected.provider, detected.key, modelHint),
+          source: 'environment',
+        };
+      }
+      // No API key found anywhere — use template fallback
+      return {
+        config: { provider: 'template', model: 'template', apiKey: '' },
+        source: 'fallback',
+      };
+    }
 
     if (provider === 'template') {
       return {
@@ -157,6 +175,16 @@ export class LlmConfigResolver {
     return canonical ?? 'template';
   }
 
+  /** Auto-detect available provider from environment variables. */
+  private autoDetectProvider(): { provider: LlmProvider; key: string } | undefined {
+    const priority: LlmProvider[] = ['anthropic', 'openai', 'moonshot', 'deepseek', 'zhipu'];
+    for (const provider of priority) {
+      const key = this.getEnvKey(provider);
+      if (key) return { provider, key };
+    }
+    return undefined;
+  }
+
   private getEnvKey(provider: LlmProvider): string | undefined {
     const names = ENV_KEY_NAMES[provider];
     for (const name of names) {
@@ -186,6 +214,19 @@ export class LlmConfigResolver {
     }
   }
 
+  /** Environment variable names for base URLs per provider. */
+  private getBaseUrl(provider: LlmProvider): string | undefined {
+    const envMap: Record<LlmProvider, string | undefined> = {
+      anthropic: process.env.ANTHROPIC_BASE_URL,
+      openai: process.env.OPENAI_BASE_URL,
+      moonshot: process.env.MOONSHOT_BASE_URL,
+      deepseek: process.env.DEEPSEEK_BASE_URL,
+      zhipu: process.env.ZHIPU_BASE_URL,
+      template: undefined,
+    };
+    return envMap[provider]?.trim();
+  }
+
   private buildConfig(
     provider: LlmProvider,
     apiKey: string,
@@ -195,6 +236,7 @@ export class LlmConfigResolver {
       provider,
       model: model ?? DEFAULT_MODELS[provider],
       apiKey,
+      baseUrl: this.getBaseUrl(provider),
     };
   }
 }
