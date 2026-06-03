@@ -4,7 +4,7 @@
 
 [![Tests](https://img.shields.io/badge/tests-213%2F213%20passing-brightgreen)](#testing)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4-blue)](https://www.typescriptlang.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20.0-green)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D24.0-green)](https://nodejs.org/)
 
 ## Features
 
@@ -14,7 +14,7 @@
 - **🌊 Fault Propagation Engine** — Trace impact along call chains with probability-weighted BFS traversal
 - **💰 Token Budget Control** — Four-level degradation strategy (reduce_depth → disable_search → core_only → prompt_user)
 - **🌐 Multi-Provider LLM** — Support Anthropic, OpenAI, Moonshot (Kimi), DeepSeek, Zhipu (GLM), with automatic fallback
-- **🔎 Web Search Integration** — DuckDuckGo search provider (no API key needed) + memory caching
+- **🔎 Web Search Integration** — Tavily primary search (keyless mode + API key) with DuckDuckGo fallback + memory caching
 - **🤖 Git Automation** — Auto branch creation, commit, push with safety checks (protected branch guard)
 - **📊 Global Metrics** — Built-in performance tracking: agent timing, token usage, cache hit rates, parser coverage
 - **🎓 Self-Learning** — Extract fault/fix patterns, learn project conventions, recommend historical solutions
@@ -42,7 +42,9 @@ npm link
 
 ### Configuration
 
-Set your LLM API key via environment variable (recommended):
+#### LLM API Keys
+
+Set via environment variable (recommended):
 
 ```bash
 # Anthropic (Claude)
@@ -64,6 +66,21 @@ Or create a `.env` file (already in `.gitignore`):
 cp .env.example .env
 # Edit .env with your keys
 ```
+
+#### Web Search (Tavily)
+
+Tavily is the primary search provider. It works in **keyless mode** by default (no setup needed), or you can provide an API key for higher rate limits:
+
+```bash
+# Via environment variable
+export TAVILY_API_KEY=tvly-xxxxxxxxxxxxxxxx
+
+# Or user config file (~/.code-agent/config.yaml)
+tavily:
+  apiKey: tvly-xxxxxxxxxxxxxxxx
+```
+
+Get a free API key at [tavily.com](https://tavily.com). When rate limits are hit, it automatically falls back to DuckDuckGo → simulation.
 
 ### Initialize a Repository
 
