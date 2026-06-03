@@ -169,6 +169,54 @@ export class LlmConfigResolver {
     return null;
   }
 
+  /**
+   * Resolve Tavily API key for web search.
+   * Priority: TAVILY_API_KEY env → ~/.code-agent/config.yaml → null
+   */
+  getTavilyKey(): string | undefined {
+    // ① Environment variable
+    const envKey = process.env.TAVILY_API_KEY?.trim();
+    if (envKey) {
+      logger.info(`Tavily API key loaded from environment (${this.maskKey(envKey)})`);
+      return envKey;
+    }
+
+    // ② User config file (tavily.apiKey)
+    const userKey = this.readUserConfigValue('tavily', 'apiKey');
+    if (userKey) {
+      logger.info(`Tavily API key loaded from user config (${this.maskKey(userKey)})`);
+      return userKey;
+    }
+
+    logger.info('No Tavily API key found — using keyless mode');
+    return undefined;
+  }
+
+  private maskKey(key: string): string {
+    if (key.length <= 12) return '*'.repeat(key.length);
+    return `${key.slice(0, 6)}****${key.slice(-4)}`;
+  }
+
+  /** Read a single value from user config YAML by section + key. */
+  private readUserConfigValue(section: string, key: string): string | undefined {
+    try {
+      if (!existsSync(this.userConfigPath)) return undefined;
+      const content = readFileSync(this.userConfigPath, 'utf-8');
+      const blockRegex = new RegExp(
+        `^${section}:\\s*$\\n((?:\\s+\\S+:.+\\n?)*)`,
+        'im'
+      );
+      const blockMatch = content.match(blockRegex);
+      if (!blockMatch) return undefined;
+
+      const keyRegex = new RegExp(`^\\s+${key}:\\s*(.+)$`, 'im');
+      const keyMatch = blockMatch[1].match(keyRegex);
+      return keyMatch?.[1]?.trim().replace(/^['"]|['"]$/g, '');
+    } catch {
+      return undefined;
+    }
+  }
+
   private normalizeProvider(hint?: string): LlmProvider {
     if (!hint) return 'template';
     const canonical = PROVIDER_ALIASES[hint.toLowerCase()];

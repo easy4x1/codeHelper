@@ -156,6 +156,104 @@ Edges: 89
 Fingerprints: 47
 ```
 
+### `code-agent batch <tasks.json>`
+
+Batch process multiple repair tasks from a JSON file.
+
+```bash
+code-agent batch tasks.json --parallel --auto-push
+```
+
+**Input format (`tasks.json`)**:
+```json
+[
+  {
+    "id": "task-1",
+    "description": "Fix null pointer in auth",
+    "type": "bug",
+    "priority": "high"
+  },
+  {
+    "id": "task-2",
+    "description": "Refactor user service",
+    "type": "refactor",
+    "priority": "medium"
+  }
+]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--parallel` | `false` | Run tasks in parallel instead of sequential |
+| `--auto-push` | `false` | Auto-push after each task completion |
+
+---
+
+### `code-agent history`
+
+View task history, extracted fault/fix patterns, and learned project conventions.
+
+```bash
+code-agent history
+```
+
+**Output**:
+```
+=== Task History (12 tasks) ===
+  task-1: Fix null pointer — 2026-06-01 — approved
+  task-2: Refactor auth — 2026-06-02 — approved
+
+=== Fault Patterns (3) ===
+  null-deref: 5 occurrences
+  memory-leak: 2 occurrences
+
+=== Project Conventions ===
+  Naming: camelCase (functions), PascalCase (classes)
+  Testing: *.test.ts, describe/it pattern
+```
+
+---
+
+### `code-agent learn`
+
+Learn project conventions from the current codebase and persist to L3 memory.
+
+```bash
+code-agent learn ./my-project
+```
+
+---
+
+### `code-agent metrics`
+
+Show performance metrics and statistics.
+
+```bash
+code-agent metrics
+# JSON output
+code-agent metrics --json
+# Reset counters
+code-agent metrics --reset
+```
+
+**Output**:
+```
+=== Metrics ===
+Agent Performance:
+  repo-scanner:  45ms avg (12 calls)
+  fault-detector: 120ms avg (8 calls)
+Token Usage:
+  Total: 45,230 tokens
+  Analysis: 18,000 (40%)
+  Planning: 13,500 (30%)
+Cache Hit Rates:
+  ResultCache: 67% (12 hit / 18 miss)
+  SemanticCache: 45% (5 hit / 11 miss)
+Parser Coverage:
+  tree-sitter: 6 languages
+  regex-fallback: 16 languages
+```
+
 ---
 
 ## Programmatic API

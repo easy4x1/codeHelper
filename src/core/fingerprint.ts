@@ -9,6 +9,7 @@ import type {
   ChangeLevel,
   ChangeAnalysis,
 } from './types.js';
+import { getGlobalMetricsCollector } from './metrics.js';
 
 // ESM-compatible require for tree-sitter CJS modules
 const require = createRequire(import.meta.url);
@@ -20,8 +21,10 @@ const require = createRequire(import.meta.url);
 export function computeFingerprint(filePath: string, content: string): FileFingerprint {
   // Try Tree-sitter for supported languages, fall back to regex for others
   const treeSitterResult = tryTreeSitter(filePath, content);
+  const ext = filePath.slice(filePath.lastIndexOf('.'));
 
   if (treeSitterResult) {
+    getGlobalMetricsCollector()?.recordParserUsage(ext, true);
     return {
       filePath,
       contentHash: createHash(content),
@@ -35,6 +38,7 @@ export function computeFingerprint(filePath: string, content: string): FileFinge
   }
 
   // Fallback to regex-based extraction (for unsupported languages)
+  getGlobalMetricsCollector()?.recordParserUsage(ext, false);
   const functions = extractFunctionsRegex(content);
   const classes = extractClassesRegex(content);
   const imports = extractImportsRegex(content);
@@ -97,7 +101,7 @@ interface TreeSitterResult {
 
 function tryTreeSitter(filePath: string, content: string): TreeSitterResult | null {
   const ext = filePath.slice(filePath.lastIndexOf('.'));
-  const supportedExts = new Set(['.ts', '.tsx', '.js', '.jsx', '.py']);
+  const supportedExts = new Set(['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.java']);
   if (!supportedExts.has(ext)) {
     return null;
   }
@@ -114,6 +118,10 @@ function tryTreeSitter(filePath: string, content: string): TreeSitterResult | nu
       language = require('tree-sitter-typescript').typescript;
     } else if (ext === '.py') {
       language = require('tree-sitter-python');
+    } else if (ext === '.go') {
+      language = require('tree-sitter-go');
+    } else if (ext === '.java') {
+      language = require('tree-sitter-java');
     }
 
     if (!language) return null;
@@ -124,6 +132,12 @@ function tryTreeSitter(filePath: string, content: string): TreeSitterResult | nu
 
     if (ext === '.py') {
       return extractPython(tree.rootNode);
+    }
+    if (ext === '.go') {
+      return extractGo(tree.rootNode);
+    }
+    if (ext === '.java') {
+      return extractJava(tree.rootNode);
     }
 
     return extractTypeScript(tree.rootNode);
@@ -503,6 +517,295 @@ function extractPython(rootNode: unknown): TreeSitterResult {
   }
 
   return { functions, classes, imports, exports };
+}
+
+// ============================================
+// Go AST Extraction
+// ============================================
+
+function extractGo(rootNode: unknown): TreeSitterResult {
+  const functions: FunctionSignature[] = [];
+  const classes: ClassSignature[] = [];
+  const imports: ImportSignature[] = [];
+  const exports: ExportSignature[] = [];
+
+  for (const node of getChildren(rootNode)) {
+    const type = getType(node);
+
+    switch (type) {
+      case 'function_declaration':
+      case 'method_declaration': {
+        // Go function names are 'identifier' children, not a field
+        let name: string | undefined;
+        for (const child of getChildren(node)) {
+          if (getType(child) === 'identifier' || getType(child) === 'field_identifier') {
+            name = (child as { text?: string }).text;
+            break;
+          }
+        }
+        if (name) {
+          const params = extractGoParameters(getFieldNode(node, 'parameters'));
+          const returnType = extractGoReturnType(node);
+          functions.push({
+            name,
+            params,
+            returnType,
+            isExported: name[0] === name[0].toUpperCase(),
+            startLine: getStartLine(node),
+            endLine: getEndLine(node),
+          });
+        }
+        break;
+      }
+
+      case 'type_declaration': {
+        // type_declaration → type_spec → type_identifier + struct_type
+        const typeSpec = getChildren(node).find(c => getType(c) === 'type_spec');
+        if (typeSpec) {
+          const nameNode = getChildren(typeSpec).find(c => getType(c) === 'type_identifier');
+          const name = nameNode ? (nameNode as { text?: string }).text : undefined;
+          if (name) {
+            const structType = getChildren(typeSpec).find(c => getType(c) === 'struct_type');
+            const methods: string[] = [];
+            const properties: string[] = [];
+
+            if (structType) {
+              const fieldList = getChildren(structType).find(c => getType(c) === 'field_declaration_list');
+              if (fieldList) {
+                for (const member of getChildren(fieldList)) {
+                  const memberType = getType(member);
+                  if (memberType === 'field_declaration') {
+                    const memberName = getFieldText(member, 'name');
+                    if (memberName) properties.push(memberName);
+                  }
+                  if (memberType === 'method_spec') {
+                    const memberName = getFieldText(member, 'name');
+                    if (memberName) methods.push(memberName);
+                  }
+                }
+              }
+            }
+
+            classes.push({
+              name,
+              methods,
+              properties,
+              isExported: name[0] === name[0].toUpperCase(),
+              startLine: getStartLine(node),
+              endLine: getEndLine(node),
+            });
+          }
+        }
+        break;
+      }
+
+      case 'import_declaration': {
+        // Single import: import "fmt"
+        const spec = getChildren(node).find(c => getType(c) === 'import_spec');
+        if (spec) {
+          const pathNode = getChildren(spec).find(c =>
+            getType(c) === 'interpreted_string_literal' || getType(c) === 'raw_string_literal'
+          );
+          const path = pathNode ? (pathNode as { text?: string }).text : undefined;
+          if (path) {
+            imports.push({
+              source: stripQuotes(path),
+              items: [],
+              isDefault: false,
+              line: getStartLine(node),
+            });
+          }
+        } else {
+          // import block: import ( "a" "b" )
+          for (const child of getChildren(node)) {
+            if (getType(child) === 'import_spec') {
+              const pathNode = getChildren(child).find(c =>
+                getType(c) === 'interpreted_string_literal' || getType(c) === 'raw_string_literal'
+              );
+              const path = pathNode ? (pathNode as { text?: string }).text : undefined;
+              if (path) {
+                imports.push({
+                  source: stripQuotes(path),
+                  items: [],
+                  isDefault: false,
+                  line: getStartLine(node),
+                });
+              }
+            }
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  // Go: exported identifiers start with uppercase
+  for (const fn of functions) {
+    if (fn.isExported) {
+      exports.push({ name: fn.name, type: 'function', line: fn.startLine });
+    }
+  }
+  for (const cls of classes) {
+    if (cls.isExported) {
+      exports.push({ name: cls.name, type: 'class', line: cls.startLine });
+    }
+  }
+
+  return { functions, classes, imports, exports };
+}
+
+function extractGoParameters(paramsNode: unknown): string[] {
+  const params: string[] = [];
+  const children = getChildren(paramsNode);
+
+  for (const child of children) {
+    const type = getType(child);
+    if (type === 'parameter_declaration') {
+      const name = getFieldText(child, 'name');
+      // Type may be a sibling if multiple params share a type: (a, b int)
+      const typeNode = getChildren(child).find(c =>
+        getType(c) === 'type_identifier' || getType(c) === 'qualified_type'
+        || getType(c) === 'slice_type' || getType(c) === 'map_type'
+        || getType(c) === 'pointer_type' || getType(c) === 'function_type'
+      );
+      const paramType = typeNode ? (typeNode as { text?: string }).text : undefined;
+      if (name) {
+        params.push(paramType ? `${name}: ${paramType}` : name);
+      }
+    }
+  }
+
+  return params;
+}
+
+function extractGoReturnType(node: unknown): string | undefined {
+  // In Go, return type is a sibling of parameter_list, not a field
+  const children = getChildren(node);
+  const returnNode = children.find(c => {
+    const t = getType(c);
+    return t === 'type_identifier' || t === 'qualified_type' || t === 'slice_type'
+      || t === 'map_type' || t === 'pointer_type' || t === 'function_type';
+  });
+  if (returnNode) {
+    return (returnNode as { text?: string }).text;
+  }
+  // Named returns: result is a parameter_list after the func params
+  const paramLists = children.filter(c => getType(c) === 'parameter_list');
+  if (paramLists.length > 1) {
+    const namedReturns = paramLists[1];
+    const returnParams = extractGoParameters(namedReturns);
+    return returnParams.length > 0 ? returnParams.join(', ') : undefined;
+  }
+  return undefined;
+}
+
+// ============================================
+// Java AST Extraction
+// ============================================
+
+function extractJava(rootNode: unknown): TreeSitterResult {
+  const functions: FunctionSignature[] = [];
+  const classes: ClassSignature[] = [];
+  const imports: ImportSignature[] = [];
+  const exports: ExportSignature[] = [];
+
+  for (const node of getChildren(rootNode)) {
+    const type = getType(node);
+
+    switch (type) {
+      case 'class_declaration':
+      case 'interface_declaration': {
+        const name = getFieldText(node, 'name');
+        if (name) {
+          const body = getFieldNode(node, 'body');
+          const methods: string[] = [];
+          const properties: string[] = [];
+
+          if (body) {
+            for (const member of getChildren(body)) {
+              const memberType = getType(member);
+              if (memberType === 'method_declaration') {
+                const methodName = getFieldText(member, 'name');
+                if (methodName) methods.push(methodName);
+              } else if (memberType === 'field_declaration') {
+                const declarator = getFieldNode(member, 'declarator');
+                if (declarator) {
+                  const propName = getFieldText(declarator, 'name');
+                  if (propName) properties.push(propName);
+                }
+              }
+            }
+          }
+
+          classes.push({
+            name,
+            methods,
+            properties,
+            isExported: true, // Java classes in public files are exported
+            startLine: getStartLine(node),
+            endLine: getEndLine(node),
+          });
+          exports.push({ name, type: 'class', line: getStartLine(node) });
+        }
+        break;
+      }
+
+      case 'method_declaration': {
+        // Top-level methods (unlikely in Java, but handle just in case)
+        const name = getFieldText(node, 'name');
+        if (name) {
+          const params = extractJavaParameters(getFieldNode(node, 'parameters'));
+          const returnType = getFieldText(node, 'type') ?? undefined;
+          functions.push({
+            name,
+            params,
+            returnType,
+            isExported: true,
+            startLine: getStartLine(node),
+            endLine: getEndLine(node),
+          });
+        }
+        break;
+      }
+
+      case 'import_declaration': {
+        // Java import: import java.util.List; — name is a scoped_identifier child
+        const scopedId = getChildren(node).find(c => getType(c) === 'scoped_identifier');
+        const nameNode = scopedId ?? getFieldNode(node, 'name');
+        if (nameNode) {
+          const name = (nameNode as { text?: string }).text ?? '';
+          const asterisk = getChildren(node).some(c => getType(c) === 'asterisk');
+          imports.push({
+            source: name,
+            items: asterisk ? ['*'] : [],
+            isDefault: false,
+            line: getStartLine(node),
+          });
+        }
+        break;
+      }
+    }
+  }
+
+  return { functions, classes, imports, exports };
+}
+
+function extractJavaParameters(paramsNode: unknown): string[] {
+  const params: string[] = [];
+  const children = getChildren(paramsNode);
+
+  for (const child of children) {
+    const type = getType(child);
+    if (type === 'formal_parameter') {
+      const name = getFieldText(child, 'name');
+      const paramType = getFieldText(child, 'type');
+      if (name) {
+        params.push(paramType ? `${name}: ${paramType}` : name);
+      }
+    }
+  }
+
+  return params;
 }
 
 function extractPythonParameters(paramsNode: unknown): string[] {

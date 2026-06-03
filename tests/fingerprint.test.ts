@@ -84,4 +84,69 @@ export class Baz { run() {} }
     const result = classifyChange(old, neu);
     expect(result.changeLevel).toBe('STRUCTURAL');
   });
+
+  it('computes fingerprint for Go file', () => {
+    const content = `package main
+
+import "fmt"
+
+func Add(a int, b int) int {
+	return a + b
+}
+
+type User struct {
+	Name string
+	Age  int
+}
+
+func (u User) Greet() string {
+	return "Hello, " + u.Name
+}
+`;
+    const fp = computeFingerprint('src/main.go', content);
+    expect(fp.filePath).toBe('src/main.go');
+    expect(fp.functions).toHaveLength(2); // Add + Greet (method)
+    expect(fp.functions[0].name).toBe('Add');
+    expect(fp.functions[0].isExported).toBe(true);
+    expect(fp.functions[1].name).toBe('Greet');
+    expect(fp.classes).toHaveLength(1); // User struct
+    expect(fp.classes[0].name).toBe('User');
+    expect(fp.imports).toHaveLength(1);
+    expect(fp.imports[0].source).toBe('fmt');
+    expect(fp.exports).toHaveLength(3); // Add + User + Greet (exported methods too)
+  });
+
+  it('computes fingerprint for Java file', () => {
+    const content = `package com.example;
+
+import java.util.List;
+
+public class UserService {
+    private String name;
+
+    public UserService(String name) {
+        this.name = name;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public List<String> findAll() {
+        return List.of();
+    }
+}
+`;
+    const fp = computeFingerprint('src/UserService.java', content);
+    expect(fp.filePath).toBe('src/UserService.java');
+    expect(fp.classes).toHaveLength(1);
+    expect(fp.classes[0].name).toBe('UserService');
+    expect(fp.classes[0].methods).toContain('getName');
+    expect(fp.classes[0].methods).toContain('findAll');
+    expect(fp.classes[0].properties).toContain('name');
+    expect(fp.imports).toHaveLength(1);
+    expect(fp.imports[0].source).toBe('java.util.List');
+    expect(fp.exports).toHaveLength(1);
+    expect(fp.exports[0].name).toBe('UserService');
+  });
 });

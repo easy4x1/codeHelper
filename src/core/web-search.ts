@@ -1,5 +1,6 @@
 import type { WebSearchQuery, WebSearchResult, SearchTemplate, WebSearchStrategy } from './types.js';
 import { createLogger } from '../utils/logger.js';
+import { LlmConfigResolver } from './llm-config.js';
 
 const logger = createLogger('web-search');
 
@@ -79,6 +80,76 @@ export function buildQuery(
 
 export interface SearchProvider {
   search(query: string): Promise<WebSearchResult[]>;
+}
+
+// ============================================
+// Tavily Search Provider
+// ============================================
+
+export class TavilySearchProvider implements SearchProvider {
+  private client: ReturnType<typeof import('@tavily/core').tavily>;
+
+  constructor(apiKey?: string, client?: ReturnType<typeof import('@tavily/core').tavily>) {
+    if (client) {
+      this.client = client;
+    } else {
+      // Use keyless mode if no API key provided
+      const { tavily } = require('@tavily/core');
+      this.client = tavily(apiKey || undefined);
+    }
+  }
+
+  async search(query: string): Promise<WebSearchResult[]> {
+    if (!query.trim()) return [];
+
+    try {
+      logger.info(`Tavily search: "${query}"`);
+      const response = await this.client.search(query, {
+        searchDepth: 'basic',
+        maxResults: 5,
+        includeAnswer: false,
+      });
+
+      const results: WebSearchResult[] = (response.results || []).map((r: {
+        title: string;
+        url: string;
+        content?: string;
+        score?: number;
+      }) => ({
+        title: r.title,
+        url: r.url,
+        snippet: r.content ?? r.title,
+        source: this.extractSource(r.url),
+        credibilityScore: r.score ?? 0.7,
+      }));
+
+      logger.info(`Tavily returned ${results.length} result(s) for "${query}"`);
+      return results;
+    } catch (err) {
+      // Handle keyless rate limit — signal caller to fall back
+      const errorName = (err as { name?: string }).name;
+      if (errorName === 'TavilyKeylessLimitError') {
+        logger.warn('Tavily keyless rate limit reached, falling back to next provider');
+      } else {
+        logger.error('Tavily search failed:', err);
+      }
+      return [];
+    }
+  }
+
+  private extractSource(url: string): string {
+    try {
+      const hostname = new URL(url).hostname;
+      if (hostname.includes('stackoverflow')) return 'stackoverflow';
+      if (hostname.includes('github')) return 'github';
+      if (hostname.includes('developer.mozilla')) return 'mdn';
+      if (hostname.includes('react.dev')) return 'react-docs';
+      if (hostname.includes('medium')) return 'medium';
+      return hostname.replace(/^www\./, '');
+    } catch {
+      return 'unknown';
+    }
+  }
 }
 
 // ============================================
@@ -308,11 +379,11 @@ export async function simulateSearch(query: WebSearchQuery): Promise<WebSearchRe
 
 export class WebSearchEngine {
   private strategy: WebSearchStrategy;
-  private provider: SearchProvider;
+  private providers: SearchProvider[];
 
   constructor(
     strategy?: Partial<WebSearchStrategy>,
-    provider?: SearchProvider,
+    providers?: SearchProvider[],
   ) {
     this.strategy = {
       triggers: {
@@ -332,7 +403,17 @@ export class WebSearchEngine {
         ...strategy?.fusion,
       },
     };
-    this.provider = provider ?? new DuckDuckGoSearchProvider();
+
+    if (providers) {
+      this.providers = providers;
+    } else {
+      // Load Tavily key securely from env → ~/.code-agent/config.yaml
+      const resolver = new LlmConfigResolver();
+      const tavilyKey = resolver.getTavilyKey();
+      this.providers = tavilyKey
+        ? [new TavilySearchProvider(tavilyKey), new DuckDuckGoSearchProvider()]
+        : [new TavilySearchProvider(), new DuckDuckGoSearchProvider()];
+    }
   }
 
   shouldSearch(context: { localConfidence: number; findingCount: number }): boolean {
@@ -366,14 +447,16 @@ export class WebSearchEngine {
 
     logger.info(`Web search query: "${query.query}" (templates: ${query.templates.join(', ')})`);
 
-    // Try the configured provider first
-    const providerResults = await this.provider.search(query.query);
-    if (providerResults.length > 0) {
-      return providerResults;
+    // Try providers in chain: Tavily → DuckDuckGo → Simulation
+    for (const provider of this.providers) {
+      const providerResults = await provider.search(query.query);
+      if (providerResults.length > 0) {
+        return providerResults;
+      }
     }
 
-    // Fallback to simulation if provider returns nothing
-    logger.info('Provider returned no results, falling back to simulation');
+    // Fallback to simulation if all providers return nothing
+    logger.info('All providers returned no results, falling back to simulation');
     return simulateSearch(query);
   }
 }

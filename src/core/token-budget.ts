@@ -6,6 +6,7 @@ import type {
 } from './types.js';
 import { createLogger } from '../utils/logger.js';
 import { ModelAwareTokenEstimator, type TokenEstimator } from './token-estimator.js';
+import { getGlobalMetricsCollector } from './metrics.js';
 
 export const DEFAULT_CONFIG: TokenBudgetConfig = {
   total: 50000,
@@ -63,6 +64,7 @@ export class TokenBudgetManager {
     }
 
     this.usageByCategory[category] = newUsage;
+    getGlobalMetricsCollector()?.recordTokenUsage(category, safeTokens);
   }
 
   getStatus(): TokenBudgetStatus {

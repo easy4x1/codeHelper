@@ -382,6 +382,11 @@
 38. **`code-agent history`** — 查看任务历史、故障模式、项目约定
 39. **`code-agent learn`** — 从代码库自动学习项目约定并持久化
 40. **任务自动记录** — `plan()`/`fix()` 成功后自动记录到 L3 LearnedMemory
+41. **CI/CD 发布流程** — GitHub Actions `release.yml` + npm 自动发布 + provenance + `prepublishOnly` 钩子
+42. **Tree-sitter Go/Java 扩展** — `extractGo()` + `extractJava()`，支持函数/类/导入/导出提取
+43. **全局 Metrics 框架** — `MetricsCollector`：Agent 性能 + Token 追踪 + 缓存命中率 + 解析器覆盖率 + 图谱规模 + 增量节省
+44. **`code-agent metrics` 命令** — 终端展示所有性能指标，支持 `--json` 和 `--reset`
+45. **Tavily Web Search** — `@tavily/core` 替换 DuckDuckGo，keyless mode + API key 支持，DuckDuckGo 降级链保留
 
 ### 6.2 剩余重要工作（按优先级）
 
@@ -392,7 +397,11 @@
 | 🟢 低 | **~~真实 Web Search API~~** | ~~接入 Google/Bing 等真实搜索 API~~ | ✅ **已完成 — DuckDuckGo（无需 API key）** |
 | 🟢 低 | **~~Git 自动化~~** | ~~分支/提交/推送/PR 创建~~ | ✅ **已完成 — GitExecutor + SafetyNet + 安全分支策略** |
 | 🟢 低 | **Plan 持久化** | `code-agent apply <plan-id>` 完整实现 | ✅ **已完成 — plan 保存/加载/应用闭环** |
+| 🟢 低 | **CI/CD 发布流程** | GitHub Actions CI + 自动发布到 npm | ✅ **已完成 — tag 触发 + provenance + prepublishOnly** |
+| 🟢 低 | **Tree-sitter Go/Java** | AST 精确解析扩展 | ✅ **已完成 — extractGo + extractJava** |
+| 🟢 低 | **全局 Metrics 框架** | Agent/Token/Cache/Parser/Graph 指标收集 | ✅ **已完成 — MetricsCollector + code-agent metrics CLI** |
 | 🟢 低 | **学习进化** | 历史任务模式提取 | Phase 5 |
+| 🟢 低 | **Tavily Web Search** | 替换 DuckDuckGo 为 Tavily + 降级链 | ✅ **已完成 — `@tavily/core` + keyless + DuckDuckGo fallback** |
 
 ### 6.3 技术债
 
@@ -405,18 +414,76 @@
 | 低 | ~~知识图谱节点删除后可能残留孤儿边~~ | ~~`src/core/knowledge-graph.ts`~~ | ✅ 已解决 |
 | 低 | ~~`estimateTokens` 启发式粗糙~~ | ~~`src/core/token-budget.ts`~~ | ✅ 已解决 |
 
+### 6.4 可优化方向（已评估策略，待数据验证后执行）
+
+> 以下方向已完成技术评估和 ROI 分析，建议在实际运行中收集指标后再决定是否实施。
+
+#### 方向 A：Tree-sitter 语言扩展
+
+**现状**：当前 Tree-sitter 精确解析覆盖 **6 种语言**（TS/TSX/JS/JSX/Python/Go/Java），其余 16 种语言使用正则回退。
+
+**评估结论**：
+
+| 语言 | 复杂度 | 实际工时 | 状态 |
+|------|--------|---------|------|
+| **Go** | ⭐ 低 | ~2h | ✅ **已完成** — `extractGo()` 支持函数/struct/方法/导入/导出 |
+| **Java** | ⭐ 低 | ~3h | ✅ **已完成** — `extractJava()` 支持类/接口/方法/字段/导入 |
+| **PHP** | ⭐⭐ 中 | 4-6h | 🟡 按需 — namespace + use 导入系统 |
+| **C#** | ⭐⭐ 中 | 4-6h | 🟡 按需 — property/accessor 需额外处理 |
+| **Ruby** | ⭐⭐ 中 | 5-8h | 🟡 按需 — 动态性强，无显式返回类型 |
+| **Rust** | ⭐⭐⭐ 高 | 8-16h | 🔴 推迟 — trait/impl/macro/lifetime 复杂；建议先做函数签名简化版 (~4h) |
+| **C/C++** | ⭐⭐⭐ 高 | 8-16h | 🔴 不建议 — 头文件系统与 tree-sitter 单文件模型冲突，建议保持正则或集成 libclang |
+
+**执行策略**：Go + Java 已完成并验证（213 测试通过）。运行一段时间评估价值后再决定是否扩展至 PHP/C#/Ruby。
+
+#### 方向 B：SemanticCache 准确度升级
+
+**现状**：`SemanticCache` 使用 Jaccard 关键词相似度，零 token 消耗，但无法理解同义词，中文支持差。
+
+**Metrics 数据收集已就绪 ✅**：`MetricsCollector` 已集成到 `SemanticCache`，自动记录每次查询的命中率、最佳相似度分数和分布统计。运行 `code-agent metrics` 即可查看。
+
+**渐进式升级路径**（建议按此顺序执行）：
+
+```
+Phase 1（现在）: 保持 Jaccard + 运行收集数据
+  └── MetricsCollector 自动记录 cache hit/miss/similarityScore
+      运行 2-4 周后评估命中率
+
+Phase 2（命中率 < 50% 时）: 本地轻量 Embedding
+  └── 集成 all-MiniLM-L6-v2 via ONNX Runtime
+      零 token 消耗，准确度提升到 85%+
+      包体积增加 ~50MB（或 wasm 版本 ~20MB）
+
+Phase 3（团队/高频场景）: 混合策略
+  └── Jaccard 快速过滤 Top-5 → API Embedding 精排 Top-1
+      仅在高频使用且 API key 可用环境启用
+```
+
+**ROI 决策公式**：
+
+```
+升级价值 = (命中率提升 × 单次 plan() 节省 token) - (升级后每查询消耗 token)
+
+示例：Jaccard 70% → Embedding 90%，plan() 消耗 ~10,000 tokens
+      每次命中节省 = 10,000 × 20% = 2,000 tokens
+      每查询 Embedding 成本 = 500 tokens
+      净收益 = +1,500 tokens/查询 ✅
+```
+
+**结论**：若实际命中率验证在 70% 以下，升级 Embedding 是正向 ROI；若已在 70% 以上，保持 Jaccard 是最优解。
+
 ---
 
 ## 7. 文件清单
 
-### 源代码（19 个文件）
+### 源代码（20 个文件）
 
 ```
 src/
-├── index.ts                      450 行  (CLI 入口 + 主类)
+├── index.ts                      ~1050 行  (CLI 入口 + 主类 + **metrics CLI**)
 ├── core/
 │   ├── types.ts                  320 行  (核心类型)
-│   ├── fingerprint.ts            319 行  (Tree-sitter 指纹计算)
+│   ├── fingerprint.ts            ~1000 行  (Tree-sitter 指纹计算 + **Go/Java**)
 │   ├── knowledge-graph.ts        100 行  (知识图谱构建器)
 │   ├── memory.ts                 128 行  (记忆层)
 │   ├── repo-scanner.ts            96 行  (扫描器)
@@ -424,27 +491,31 @@ src/
 │   ├── sync.ts                   163 行  (增量同步)
 │   ├── llm-service.ts            425 行  (LLM 服务抽象 + 多 Provider)
 │   ├── propagation.ts            303 行  (故障传播引擎)
-│   ├── token-budget.ts           170 行  (Token 预算管理器)
-│   ├── token-estimator.ts        100 行  (模型感知 Token 估算)    ✅ 新增
-│   ├── llm-config.ts             180 行  (LLM 配置 + API key 安全)  ✅ 新增
-│   ├── **web-search.ts**         **180 行**  (**Web 搜索引擎 + DuckDuckGo**)  ✅ **新增**
-│   └── **git-executor.ts**       **200 行**  (**Git 操作封装 + 安全策略**)    ✅ **新增**
+│   ├── token-budget.ts           170 行  (Token 预算管理器 + **metrics 集成**)
+│   ├── token-estimator.ts        100 行  (模型感知 Token 估算)
+│   ├── llm-config.ts             180 行  (LLM 配置 + API key 安全)
+│   ├── web-search.ts             180 行  (Web 搜索引擎 + DuckDuckGo)
+│   ├── git-executor.ts           200 行  (Git 操作封装 + 安全策略)
+│   ├── semantic-cache.ts         103 行  (语义缓存 + **metrics 集成**)     ✅ **修改**
+│   └── **metrics.ts**            **~220 行**  (**MetricsCollector** — 全局指标)  ✅ **新增**
 ├── agents/
-│   ├── base-agent.ts              47 行  (Agent 基类)
-│   ├── patch-generator-agent.ts   75 行  (Patch 生成 + **LLM 增强**)   ✅ **修改**
-│   ├── solution-planner-agent.ts  85 行  (LLM 增强方案规划 + **搜索集成**) ✅ **修改**
+│   ├── base-agent.ts              47 行  (Agent 基类 + **metrics 集成**)     ✅ **修改**
+│   ├── patch-generator-agent.ts   75 行  (Patch 生成 + LLM 增强)
+│   ├── solution-planner-agent.ts  85 行  (LLM 增强方案规划 + 搜索集成)
 │   ├── fault-detector-agent.ts    96 行  (LLM 增强故障检测)
 │   ├── repo-scanner-agent.ts      39 行  (扫描 Agent)
-│   ├── context-builder-agent.ts   55 行  (上下文构建 + 传播集成)   ✅ 修改
-│   ├── **web-searcher-agent.ts**  **65 行**  (**Web 搜索 Agent**)           ✅ **新增**
-│   └── **git-executor-agent.ts**  **35 行**  (**Git 执行 Agent**)           ✅ **新增**
+│   ├── context-builder-agent.ts   55 行  (上下文构建 + 传播集成)
+│   ├── web-searcher-agent.ts      65 行  (Web 搜索 Agent)
+│   ├── git-executor-agent.ts      35 行  (Git 执行 Agent)
+│   ├── root-cause-analyzer-agent.ts 145 行  (根因分析 Agent)
+│   └── learning-agent.ts         101 行  (学习 Agent)
 ├── interface/
 │   └── cli-review.ts              61 行  (Review UI)
 └── utils/
     ├── logger.ts                  36 行  (日志)
     └── hash.ts                     5 行  (哈希)
 
-总计: ~5,300 行代码 + **202** 个测试（**28** 个测试文件）
+总计: ~5,800 行代码 + **213** 个测试（**29** 个测试文件）
 ```
 
 ---

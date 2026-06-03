@@ -7,17 +7,49 @@
   "bin": {
     "code-agent": "dist/index.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
     "test": "vitest",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "prepublishOnly": "npm run test:run && npm run build"
+  },
+  "keywords": [
+    "code-repair",
+    "agent",
+    "ai",
+    "tree-sitter",
+    "fingerprint",
+    "incremental-analysis",
+    "knowledge-graph",
+    "cli"
+  ],
+  "author": "easy4x1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/easy4x1/code-repair-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/easy4x1/code-repair-agent/issues"
+  },
+  "homepage": "https://github.com/easy4x1/code-repair-agent#readme",
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.100.1",
+    "@tavily/core": "^0.7.5",
     "commander": "^12.0.0",
     "fuse.js": "^7.0.0",
     "tree-sitter": "^0.21.0",
+    "tree-sitter-go": "^0.21.0",
+    "tree-sitter-java": "^0.21.0",
     "tree-sitter-javascript": "^0.21.0",
     "tree-sitter-python": "^0.21.0",
     "tree-sitter-typescript": "^0.21.0",

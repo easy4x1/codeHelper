@@ -28,6 +28,7 @@ import { RootCauseAnalyzerAgent } from './agents/root-cause-analyzer-agent.js';
 import type { GitExecutionConfig } from './core/git-executor.js';
 import { SemanticCache } from './core/semantic-cache.js';
 import { LearningAgent } from './agents/learning-agent.js';
+import { MetricsCollector, setGlobalMetricsCollector } from './core/metrics.js';
 
 export interface AgentConfig {
   verbose?: boolean;
@@ -58,10 +59,18 @@ export class CodeRepairAgent {
   private llmService: LlmService;
   private budgetManager: TokenBudgetManager;
   private semanticCache = new SemanticCache();
+  private metrics: MetricsCollector;
 
   constructor(config: AgentConfig = {}) {
     this.config = config;
     this.memory = new MemoryMiddleware();
+
+    // Initialize metrics collector
+    this.metrics = new MetricsCollector({
+      path: config.memoryPath ? config.memoryPath.replace('memory.json', 'metrics.json') : '.repair-agent/metrics.json',
+      autoFlushIntervalMs: 30000, // flush every 30s
+    });
+    setGlobalMetricsCollector(this.metrics);
 
     // Resolve LLM provider configuration securely
     // Auto-detect from environment if no provider specified
@@ -90,6 +99,10 @@ export class CodeRepairAgent {
 
   getBudgetManager(): TokenBudgetManager {
     return this.budgetManager;
+  }
+
+  getMetrics(): MetricsCollector {
+    return this.metrics;
   }
 
   async init(repoPath: string): Promise<{ files: string[]; fingerprintCount: number }> {
@@ -126,6 +139,11 @@ export class CodeRepairAgent {
     this.memory.setKnowledgeGraph(builder.build());
 
     const files = result.result.files as string[];
+
+    // Record graph metrics
+    const graph = this.memory.getKnowledgeGraph();
+    this.metrics.recordGraphSize(graph.nodes.length, graph.edges.length, files.length);
+
     return {
       files,
       fingerprintCount: files.length,
@@ -133,6 +151,7 @@ export class CodeRepairAgent {
   }
 
   async plan(task: RepairTask): Promise<SolutionPlan> {
+    const taskStart = Date.now();
     const recommendations = this.budgetManager.getRecommendations();
     if (!recommendations.shouldProceed) {
       throw new Error('Token budget exceeded: ' + recommendations.message);
@@ -253,6 +272,11 @@ export class CodeRepairAgent {
     // Phase 3: Semantic Cache — store plan for future reuse
     this.semanticCache.store(task.description, plan);
 
+    const taskDuration = Date.now() - taskStart;
+    const tokensUsed = this.budgetManager.getStatus().used;
+    this.metrics.recordTask('plan', true, taskDuration, tokensUsed);
+    await this.metrics.flush();
+
     return plan;
   }
 
@@ -343,7 +367,7 @@ async function main(): Promise<void> {
   program
     .name('code-agent')
     .description('AI-powered code repair agent')
-    .version('0.4.0');
+    .version('0.5.0');
 
   program
     .command('init')
@@ -465,6 +489,7 @@ async function main(): Promise<void> {
         const memoryPath = join(resolve(repoPath), '.repair-agent', 'memory.json');
         await agent.loadMemory(memoryPath);
 
+        const syncStart = Date.now();
         const result = await syncRepo(agent.getMemory(), {
           repoPath: resolve(repoPath),
           forceFull: options.forceFull,
@@ -479,6 +504,16 @@ async function main(): Promise<void> {
         memory.setRepoMemory(repoMemory);
 
         await agent.saveMemory(memoryPath);
+
+        // Record incremental savings metrics
+        const filesSkipped = result.filesUnchanged + result.filesCosmetic;
+        const filesReanalyzed = result.filesStructural + result.filesAdded + result.filesDeleted;
+        const estimatedTokensSaved = filesSkipped * 500; // rough estimate: 500 tokens per skipped file
+        agent.getMetrics().recordIncrementalSavings(filesSkipped, filesReanalyzed, estimatedTokensSaved);
+
+        const syncDuration = Date.now() - syncStart;
+        agent.getMetrics().recordTask('sync', true, syncDuration, 0);
+        await agent.getMetrics().flush();
 
         console.log('\n=== Sync Complete ===');
         console.log(`Files analyzed: ${result.filesAnalyzed}`);
@@ -597,6 +632,7 @@ async function main(): Promise<void> {
     .option('--web-search', 'Enable web search for solutions', true)
     .option('--no-web-search', 'Disable web search for solutions')
     .action(async (description: string, options: { repo: string; file: string[]; autoPush: boolean; llm?: string; budget: string; webSearch: boolean }) => {
+      const fixStart = Date.now();
       try {
         const llmService = options.llm;
         const total = parseInt(options.budget, 10);
@@ -718,6 +754,13 @@ async function main(): Promise<void> {
           undefined,
           plan
         );
+
+        // Record metrics
+        const fixDuration = Date.now() - fixStart;
+        const tokensUsed = agent.getBudgetManager().getStatus().used;
+        agent.getMetrics().recordTask('fix', appliedFiles.length > 0, fixDuration, tokensUsed);
+        await agent.getMetrics().flush();
+
         await agent.saveMemory(memoryPath);
       } catch (err) {
         console.error(err);
@@ -919,6 +962,7 @@ async function main(): Promise<void> {
     .description('Learn project conventions from codebase')
     .argument('[repo-path]', 'Path to repository', '.')
     .action(async (repoPath: string) => {
+      const learnStart = Date.now();
       try {
         const codeAgent = new CodeRepairAgent({ verbose: true });
         const memoryPath = join(resolve(repoPath), '.repair-agent', 'memory.json');
@@ -933,6 +977,11 @@ async function main(): Promise<void> {
 
         await codeAgent.saveMemory(memoryPath);
 
+        // Record metrics
+        const learnDuration = Date.now() - learnStart;
+        codeAgent.getMetrics().recordTask('learn', true, learnDuration, 0);
+        await codeAgent.getMetrics().flush();
+
         console.log('\n=== Learning Complete ===');
         console.log(`Conventions learned: ${result.result.conventionsLearned}`);
         console.log(`Patterns extracted: ${result.result.patternsExtracted}`);
@@ -944,6 +993,135 @@ async function main(): Promise<void> {
             console.log(`  [${c.category}] ${c.rule}`);
           }
         }
+      } catch (err) {
+        console.error(err);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('metrics')
+    .description('Show application performance metrics')
+    .option('-r, --repo <path>', 'Repository path', '.')
+    .option('--json', 'Output raw JSON', false)
+    .option('--reset', 'Reset all metrics', false)
+    .action(async (options: { repo: string; json: boolean; reset: boolean }) => {
+      try {
+        const metricsPath = join(resolve(options.repo), '.repair-agent', 'metrics.json');
+
+        if (options.reset) {
+          const collector = new MetricsCollector({ path: metricsPath });
+          await collector.reset();
+          console.log('✅ Metrics reset');
+          return;
+        }
+
+        const collector = new MetricsCollector({ path: metricsPath });
+        await collector.load();
+        const snapshot = collector.getSnapshot();
+
+        if (options.json) {
+          console.log(JSON.stringify(snapshot, null, 2));
+          return;
+        }
+
+        console.log('\n=== Code Repair Agent Metrics ===\n');
+
+        // Agent metrics
+        console.log('📊 Agent Performance');
+        console.log('─'.repeat(40));
+        const agents = Object.values(snapshot.agents);
+        if (agents.length === 0) {
+          console.log('  No agent executions recorded yet');
+        } else {
+          for (const a of agents) {
+            const avgMs = a.callCount > 0 ? Math.round(a.totalDurationMs / a.callCount) : 0;
+            const successRate = a.callCount > 0 ? ((a.successCount / a.callCount) * 100).toFixed(1) : '0.0';
+            console.log(`  ${a.agentName}`);
+            console.log(`    Calls: ${a.callCount} | Avg: ${avgMs}ms | Success: ${successRate}%`);
+          }
+        }
+
+        // Cache metrics
+        console.log('\n💾 Semantic Cache');
+        console.log('─'.repeat(40));
+        const cacheTotal = snapshot.cache.hits + snapshot.cache.misses;
+        if (cacheTotal === 0) {
+          console.log('  No cache queries recorded yet');
+        } else {
+          const hitRate = ((snapshot.cache.hits / cacheTotal) * 100).toFixed(1);
+          const dist = collector.getCacheSimilarityDistribution();
+          console.log(`  Queries: ${cacheTotal} | Hits: ${snapshot.cache.hits} | Misses: ${snapshot.cache.misses}`);
+          console.log(`  Hit Rate: ${hitRate}%`);
+          console.log(`  Similarity: min=${dist.min.toFixed(2)} max=${dist.max.toFixed(2)} avg=${dist.avg.toFixed(2)} median=${dist.median.toFixed(2)}`);
+        }
+
+        // Token metrics
+        console.log('\n🔤 Token Usage');
+        console.log('─'.repeat(40));
+        const totalTokens = Object.values(snapshot.tokens).reduce((s, v) => s + v, 0);
+        if (totalTokens === 0) {
+          console.log('  No token usage recorded yet');
+        } else {
+          console.log(`  Total: ${totalTokens.toLocaleString()} tokens`);
+          console.log(`  Analysis:  ${snapshot.tokens.analysis.toLocaleString()}`);
+          console.log(`  Search:    ${snapshot.tokens.search.toLocaleString()}`);
+          console.log(`  Planning:  ${snapshot.tokens.planning.toLocaleString()}`);
+          console.log(`  Review:    ${snapshot.tokens.review.toLocaleString()}`);
+        }
+
+        // Task metrics
+        console.log('\n📋 Tasks');
+        console.log('─'.repeat(40));
+        if (snapshot.tasks.length === 0) {
+          console.log('  No tasks recorded yet');
+        } else {
+          const byType: Record<string, { total: number; success: number }> = {};
+          for (const t of snapshot.tasks) {
+            if (!byType[t.taskType]) byType[t.taskType] = { total: 0, success: 0 };
+            byType[t.taskType].total++;
+            if (t.success) byType[t.taskType].success++;
+          }
+          for (const [type, stats] of Object.entries(byType)) {
+            const rate = ((stats.success / stats.total) * 100).toFixed(1);
+            console.log(`  ${type}: ${stats.total} tasks | ${rate}% success`);
+          }
+        }
+
+        // Parser metrics
+        console.log('\n🔍 Parser Coverage');
+        console.log('─'.repeat(40));
+        const parserTotal = snapshot.parser.treeSitterFiles + snapshot.parser.regexFiles;
+        if (parserTotal === 0) {
+          console.log('  No files parsed yet');
+        } else {
+          const tsRate = ((snapshot.parser.treeSitterFiles / parserTotal) * 100).toFixed(1);
+          console.log(`  Tree-sitter: ${snapshot.parser.treeSitterFiles} files (${tsRate}%)`);
+          console.log(`  Regex:       ${snapshot.parser.regexFiles} files`);
+          console.log(`  By language:`);
+          for (const [lang, counts] of Object.entries(snapshot.parser.byLanguage)) {
+            const langTotal = counts.treeSitter + counts.regex;
+            const langRate = langTotal > 0 ? ((counts.treeSitter / langTotal) * 100).toFixed(1) : '0.0';
+            console.log(`    ${lang}: ${counts.treeSitter}/${langTotal} TS (${langRate}%)`);
+          }
+        }
+
+        // Graph metrics
+        console.log('\n🕸️  Knowledge Graph');
+        console.log('─'.repeat(40));
+        console.log(`  Nodes: ${snapshot.graph.nodeCount}`);
+        console.log(`  Edges: ${snapshot.graph.edgeCount}`);
+        console.log(`  Files: ${snapshot.graph.fileCount}`);
+
+        // Incremental savings
+        console.log('\n⏱️  Incremental Analysis Savings');
+        console.log('─'.repeat(40));
+        console.log(`  Files skipped:     ${snapshot.incrementalSavings.filesSkipped}`);
+        console.log(`  Files reanalyzed:  ${snapshot.incrementalSavings.filesReanalyzed}`);
+        console.log(`  Est. tokens saved: ${snapshot.incrementalSavings.estimatedTokensSaved.toLocaleString()}`);
+
+        console.log(`\n📅 Since: ${new Date(snapshot.startedAt).toLocaleString()}`);
+        console.log(`🔄 Last update: ${new Date(snapshot.lastUpdatedAt).toLocaleString()}`);
       } catch (err) {
         console.error(err);
         process.exit(1);

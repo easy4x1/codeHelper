@@ -1,5 +1,6 @@
 import type { AgentInput, AgentOutput, Finding } from '../core/types.js';
 import { createLogger, type Logger } from '../utils/logger.js';
+import { getGlobalMetricsCollector } from '../core/metrics.js';
 
 export abstract class BaseAgent {
   protected logger: Logger;
@@ -17,6 +18,7 @@ export abstract class BaseAgent {
       const duration = Date.now() - startTime;
 
       this.logger.info(`Completed in ${duration}ms`);
+      getGlobalMetricsCollector()?.recordAgentExecution(this.name, duration, true);
 
       // Extract findings safely
       const findings = Array.isArray(result.findings) ? result.findings : [];
@@ -39,6 +41,7 @@ export abstract class BaseAgent {
     } catch (error) {
       const duration = Date.now() - startTime;
       this.logger.error(`Failed after ${duration}ms:`, error);
+      getGlobalMetricsCollector()?.recordAgentExecution(this.name, duration, false);
       throw error;
     }
   }

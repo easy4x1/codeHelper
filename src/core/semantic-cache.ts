@@ -1,5 +1,6 @@
 import type { SolutionPlan } from './types.js';
 import { createLogger } from '../utils/logger.js';
+import { getGlobalMetricsCollector } from './metrics.js';
 
 const logger = createLogger('semantic-cache');
 
@@ -41,7 +42,10 @@ export class SemanticCache {
       }
     }
 
-    if (bestMatch && bestScore >= threshold) {
+    const hit = !!(bestMatch && bestScore >= threshold);
+    getGlobalMetricsCollector()?.recordCacheQuery(bestScore, hit);
+
+    if (hit && bestMatch) {
       logger.info(`Semantic cache HIT (score=${bestScore.toFixed(2)}): "${query.slice(0, 40)}…"`);
       return JSON.parse(JSON.stringify(bestMatch.plan));
     }

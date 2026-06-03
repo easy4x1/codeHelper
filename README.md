@@ -2,19 +2,22 @@
 
 > AI-powered code repair agent with fingerprint-based incremental analysis and multi-provider LLM support.
 
-[![Tests](https://img.shields.io/badge/tests-144%2F144%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-213%2F213%20passing-brightgreen)](#testing)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4-blue)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20.0-green)](https://nodejs.org/)
 
 ## Features
 
-- **🔍 Intelligent Code Analysis** — Scan repositories, build knowledge graphs, and detect faults using Tree-sitter + LLM hybrid architecture
+- **🔍 Intelligent Code Analysis** — Scan repositories, build knowledge graphs, and detect faults using Tree-sitter + LLM hybrid architecture (6 languages)
 - **🧠 Three-Layer Memory** — L1 (repo static), L2 (task dynamic), L3 (learned cross-task) with automatic persistence
 - **⚡ Fingerprint-Based Incremental Updates** — Skip unchanged files, achieving 80-95% token savings on daily tasks
 - **🌊 Fault Propagation Engine** — Trace impact along call chains with probability-weighted BFS traversal
 - **💰 Token Budget Control** — Four-level degradation strategy (reduce_depth → disable_search → core_only → prompt_user)
 - **🌐 Multi-Provider LLM** — Support Anthropic, OpenAI, Moonshot (Kimi), DeepSeek, Zhipu (GLM), with automatic fallback
-- **🔎 Web Search Integration** — Automatic external knowledge lookup when local confidence is low, with memory caching
+- **🔎 Web Search Integration** — DuckDuckGo search provider (no API key needed) + memory caching
+- **🤖 Git Automation** — Auto branch creation, commit, push with safety checks (protected branch guard)
+- **📊 Global Metrics** — Built-in performance tracking: agent timing, token usage, cache hit rates, parser coverage
+- **🎓 Self-Learning** — Extract fault/fix patterns, learn project conventions, recommend historical solutions
 - **🔒 API Key Security** — Environment variables → user config → .env, with automatic key masking in logs
 - **📝 Interactive Review Flow** — Generate patches, preview diffs, approve/reject with human-in-the-loop
 
@@ -84,6 +87,15 @@ code-agent apply plan-123
 
 # Disable web search for local-only analysis
 code-agent plan "Fix null pointer" --no-web-search
+
+# View project metrics
+code-agent metrics
+
+# View task history
+code-agent history
+
+# Learn project conventions
+code-agent learn
 ```
 
 ### Incremental Sync
@@ -104,6 +116,10 @@ code-agent sync ./my-project
 | `apply <plan-id>` | Apply approved plan non-interactively | `--dry-run` |
 | `sync [repo-path]` | Incremental sync after code changes | `--force-full` |
 | `status [repo-path]` | Show knowledge graph statistics | — |
+| `batch <tasks.json>` | Batch process multiple repair tasks | `--parallel`, `--auto-push` |
+| `history` | View task history, patterns, conventions | — |
+| `learn` | Learn project conventions from codebase | — |
+| `metrics` | Show performance metrics and statistics | `--json`, `--reset` |
 
 ## Supported LLM Providers
 
@@ -135,11 +151,13 @@ User Input → Task Planner → Repo Scanner → Knowledge Graph
                                     ↓
                          Memory Middleware (L1/L2/L3)
                                     ↓
-              Fault Detector → Context Builder → Web Searcher (Phase 3)
+              Fault Detector → Context Builder → Web Searcher
                                     ↓
               Root Cause Analyzer → Solution Planner → Patch Generator
                                     ↓
-                           Review Interface → Git Executor (Phase 4)
+                           Review Interface → Git Executor
+                                    ↓
+                         Learning Agent (patterns + conventions)
 ```
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture documentation.
@@ -163,9 +181,9 @@ npm run dev
 |-------|--------|-------------|
 | Phase 1: MVP | ✅ 100% | Core闭环: scan → detect → plan → patch → review |
 | Phase 2: Memory Optimization | ✅ 100% | Fingerprint, propagation, token budget |
-| Phase 3: Web Enhancement | ✅ 100% | Web search, result fusion, LLM patch generation |
-| Phase 4: Automation | 🔴 0% | Git automation, CI/CD |
-| Phase 5: Learning | 🔴 0% | Pattern extraction, project conventions |
+| Phase 3: Web Enhancement | ✅ 100% | Web search, result fusion, LLM patch generation, cache, batch |
+| Phase 4: Automation | ✅ 100% | Git automation, CI/CD, batch processing, metrics |
+| Phase 5: Learning | ✅ 100% | Pattern extraction, project conventions, recommendations |
 
 See [PROGRESS.md](PROGRESS.md) for detailed progress.
 

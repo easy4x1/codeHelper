@@ -6,6 +6,7 @@ import {
   buildQuery,
   simulateSearch,
   DuckDuckGoSearchProvider,
+  TavilySearchProvider,
   type SearchProvider,
 } from '../src/core/web-search.js';
 
@@ -153,6 +154,52 @@ describe('DuckDuckGoSearchProvider', () => {
   });
 });
 
+describe('TavilySearchProvider', () => {
+  it('returns Tavily results on success', async () => {
+    const mockSearch = vi.fn().mockResolvedValue({
+      results: [
+        {
+          title: 'TypeError: Cannot read property map of undefined',
+          url: 'https://stackoverflow.com/questions/123',
+          content: 'Check if array is defined before calling .map()',
+          score: 0.92,
+        },
+      ],
+    });
+    const mockClient = { search: mockSearch };
+
+    const provider = new TavilySearchProvider(undefined, mockClient as unknown as ReturnType<typeof import('@tavily/core').tavily>);
+    const results = await provider.search('TypeError Cannot read property map of undefined');
+
+    expect(results.length).toBe(1);
+    expect(results[0].title).toContain('TypeError');
+    expect(results[0].source).toBe('stackoverflow');
+    expect(results[0].credibilityScore).toBe(0.92);
+    expect(mockSearch).toHaveBeenCalledWith(
+      'TypeError Cannot read property map of undefined',
+      expect.objectContaining({ searchDepth: 'basic', maxResults: 5 })
+    );
+  });
+
+  it('returns empty array when Tavily fails', async () => {
+    const mockClient = {
+      search: vi.fn().mockRejectedValue(new Error('Tavily API error')),
+    };
+
+    const provider = new TavilySearchProvider(undefined, mockClient as unknown as ReturnType<typeof import('@tavily/core').tavily>);
+    const results = await provider.search('test query');
+    expect(results).toEqual([]);
+  });
+
+  it('returns empty array for empty query', async () => {
+    const mockClient = { search: vi.fn() };
+    const provider = new TavilySearchProvider(undefined, mockClient as unknown as ReturnType<typeof import('@tavily/core').tavily>);
+    const results = await provider.search('');
+    expect(results).toEqual([]);
+    expect(mockClient.search).not.toHaveBeenCalled();
+  });
+});
+
 describe('WebSearchEngine with provider', () => {
   let engine: WebSearchEngine;
 
@@ -201,7 +248,7 @@ describe('WebSearchEngine with provider', () => {
       },
     };
 
-    const customEngine = new WebSearchEngine({}, mockProvider);
+    const customEngine = new WebSearchEngine({}, [mockProvider]);
     const results = await customEngine.search({
       errorMessage: "Cannot read property 'map' of undefined",
       language: 'javascript',
@@ -219,12 +266,39 @@ describe('WebSearchEngine with provider', () => {
       },
     };
 
-    const customEngine = new WebSearchEngine({}, emptyProvider);
+    const customEngine = new WebSearchEngine({}, [emptyProvider]);
     const results = await customEngine.search({
       errorMessage: "Cannot read property 'map' of undefined",
       language: 'javascript',
     });
     expect(results.length).toBeGreaterThan(0);
+  });
+
+  it('search falls back to second provider when first returns empty', async () => {
+    const emptyProvider: SearchProvider = {
+      async search() {
+        return [];
+      },
+    };
+    const fallbackProvider: SearchProvider = {
+      async search(query: string) {
+        return [{
+          title: `Fallback: ${query}`,
+          url: 'https://example.com',
+          snippet: 'Fallback result',
+          source: 'fallback',
+          credibilityScore: 0.5,
+        }];
+      },
+    };
+
+    const customEngine = new WebSearchEngine({}, [emptyProvider, fallbackProvider]);
+    const results = await customEngine.search({
+      errorMessage: "Cannot read property 'map' of undefined",
+      language: 'javascript',
+    });
+    expect(results.length).toBe(1);
+    expect(results[0].source).toBe('fallback');
   });
 
   it('search returns empty when shouldSearch is false', async () => {
