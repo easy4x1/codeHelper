@@ -152,7 +152,7 @@ export interface TaskContext {
 
 export interface Finding {
   id: string;
-  type: 'fault' | 'pattern' | 'insight';
+  type: 'fault' | 'pattern' | 'insight' | 'style';
   description: string;
   confidence: number;
   nodeIds: string[];

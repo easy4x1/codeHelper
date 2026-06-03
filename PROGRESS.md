@@ -2,7 +2,7 @@
 
 > 生成日期: 2026-06-03
 > 对比基准: DESIGN.md v1.0.0
-> 当前版本: 0.4.0 (Phase 3 Deferred 完成, Phase 4 进行中)
+> 当前版本: 0.5.0 (Phase 5 学习与进化完成)
 
 ---
 
@@ -14,9 +14,9 @@
 | Phase 2: 记忆优化 | Fingerprint 增量、传播裁剪、Token 预算 | **100%** |
 | Phase 3: 联网增强 | Web Search、结果融合、LLM Patch 生成、搜索降级、Batch 并行、结果缓存、语义缓存、上下文压缩 | **100%** |
 | Phase 4: 自动化与集成 | Git 自动化、CI/CD、批量任务 | **核心完成 (~70%)** |
-| Phase 5: 学习与进化 | 模式提取、项目约定学习 | **0%** |
+| Phase 5: 学习与进化 | 模式提取、项目约定学习、个性化推荐 | **100%** |
 
-**整体完成度: ~88%**
+**整体完成度: ~95%**
 
 ---
 
@@ -34,6 +34,7 @@
 | `solution-planner` | 输出结构化修改方案 | ✅ **LLM 增强** | 生成带 `originalCode`/`modifiedCode` 的深度方案 |
 | `patch-generator` | 将方案转换为具体代码 diff | ✅ **已完成** | `PatchGeneratorAgent` 实现，支持 add/modify/delete |
 | `git-executor` | 执行 git 操作 | ✅ **已完成** | `GitExecutor` + `GitExecutorAgent`，分支创建/提交/推送 |
+| `learning-agent` | 学习项目约定、提取模式 | ✅ **新增** | `LearningAgent` 协调 PatternExtractor + ConventionLearner + RecommendationEngine |
 
 ### 1.2 核心模块实现状态
 
@@ -50,6 +51,10 @@
 | **方案生成** | 结构化方案 + 风险评估 | ✅ **LLM 增强** | `src/agents/solution-planner-agent.ts` |
 | **Patch 生成** | 方案转代码 diff + 应用 | ✅ 已完成 | `src/core/patch.ts` + `src/agents/patch-generator-agent.ts` |
 | **Review 与执行** | 终端 diff 展示 + 用户确认 | ✅ 已完成 | `src/interface/cli-review.ts` + `src/index.ts` apply/fix 命令 |
+| **模式提取 (Pattern Extractor)** | 从 findings/plans 提取可复用模式 | ✅ **新增** | `src/core/pattern-extractor.ts` |
+| **约定学习 (Convention Learner)** | 从代码指纹学习命名/测试/架构约定 | ✅ **新增** | `src/core/convention-learner.ts` |
+| **推荐引擎 (Recommendation Engine)** | 任务-模式相似度评分与排序 | ✅ **新增** | `src/core/recommendation-engine.ts` |
+| **学习 Agent (Learning Agent)** | 协调学习流程：约定+模式+推荐 | ✅ **新增** | `src/agents/learning-agent.ts` |
 
 ---
 
@@ -280,11 +285,15 @@
 | `tests/memory.test.ts` | 5 | 记忆层 L1/L2/L3 + 序列化 |
 | `tests/scanner.test.ts` | 3 | 仓库扫描 + 导入映射 |
 | `tests/base-agent.test.ts` | 3 | Agent 基类 + 日志 + 计时 |
-| `tests/agents.test.ts` | 8 | 8 个专用 Agent（含 PatchGenerator + 传播集成 + 并行分析 + 缓存集成） |
-| `tests/cli.test.ts` | 12 | CLI 入口 + 内存持久化 + apply + 预算测试 + 搜索降级 |
+| `tests/agents.test.ts` | 8 | 8 个专用 Agent（含 PatchGenerator + 传播集成 + 并行分析 + 缓存集成 + LearningAgent） |
+| `tests/cli.test.ts` | 14 | CLI 入口 + 内存持久化 + apply + 预算测试 + 搜索降级 + history/learn |
 | `tests/result-cache.test.ts` | 5 | 结果缓存（hit/miss/hash-change/deep-copy/clear） |
 | `tests/semantic-cache.test.ts` | 6 | 语义缓存（Jaccard 相似度 + plan 复用） |
 | `tests/context-compressor.test.ts` | 4 | 上下文压缩（小文件透传 + 大文件摘要 + fallback） |
+| `tests/pattern-extractor.test.ts` | 3 | 模式提取（fault/fix 模式 + 归一化） |
+| `tests/convention-learner.test.ts` | 3 | 约定学习（camelCase/PascalCase/测试命名） |
+| `tests/recommendation-engine.test.ts` | 4 | 推荐引擎（相似度评分 + 排序 + 约定） |
+| `tests/learning-agent.test.ts` | 2 | 学习 Agent（任务记录 + 约定学习） |
 | `tests/patch.test.ts` | 7 | Patch 生成 + 应用 + 冲突检测 |
 | `tests/cli-review.test.ts` | 5 | CLI diff 格式化 + Review UI |
 | `tests/sync.test.ts` | 5 | 增量同步（新增/删除/不变/强制全量） |
@@ -297,7 +306,7 @@
 | **`tests/patch-llm.test.ts`** | **3** | **LLM generatePatch（Template + Anthropic）** |
 | **`tests/git-executor.test.ts`** | **4** | **GitExecutor 配置 + 安全策略** |
 | **`tests/root-cause-analyzer-agent.test.ts`** | **4** | **RootCauseAnalyzerAgent 根因分析** |
-| **总计** | **180** | **24 个模块** |
+| **总计** | **202** | **28 个模块** |
 
 ---
 
@@ -365,6 +374,14 @@
 30. **结果缓存** — `ResultCache` 模块：指纹哈希键缓存分析结果
 31. **语义缓存** — `SemanticCache` 模块：Jaccard 关键词相似度复用历史 plan
 32. **上下文压缩** — `ContextCompressor` 模块：大文件结构摘要，节省 50-70% token
+33. **L3 LearnedMemory 扩展** — `Convention` 类型 + `recordTask`/`addFaultPattern`/`addFixPattern`/`addConvention` 方法
+34. **模式提取引擎** — `PatternExtractor`：从 findings/plans 提取 fault/fix 模式，关键词聚类归一化
+35. **约定学习引擎** — `ConventionLearner`：从代码指纹学习命名(camelCase/PascalCase)/测试/架构约定
+36. **推荐引擎** — `RecommendationEngine`：Jaccard 相似度评分，任务-模式匹配排序
+37. **学习 Agent** — `LearningAgent`：协调学习流程，自动记录任务，提取模式，生成推荐
+38. **`code-agent history`** — 查看任务历史、故障模式、项目约定
+39. **`code-agent learn`** — 从代码库自动学习项目约定并持久化
+40. **任务自动记录** — `plan()`/`fix()` 成功后自动记录到 L3 LearnedMemory
 
 ### 6.2 剩余重要工作（按优先级）
 
@@ -427,7 +444,7 @@ src/
     ├── logger.ts                  36 行  (日志)
     └── hash.ts                     5 行  (哈希)
 
-总计: ~4,700 行代码 + **180** 个测试（**24** 个测试文件）
+总计: ~5,300 行代码 + **202** 个测试（**28** 个测试文件）
 ```
 
 ---
