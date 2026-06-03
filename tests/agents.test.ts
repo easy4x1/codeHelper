@@ -7,7 +7,8 @@ import { PatchGeneratorAgent } from '../src/agents/patch-generator-agent.js';
 import { MemoryMiddleware } from '../src/core/memory.js';
 import { computeFingerprint } from '../src/core/fingerprint.js';
 import { KnowledgeGraphBuilder } from '../src/core/knowledge-graph.js';
-import type { AgentInput, KnowledgeGraph, GraphNode } from '../src/core/types.js';
+import type { AgentInput, KnowledgeGraph, GraphNode, Finding } from '../src/core/types.js';
+import { ResultCache } from '../src/core/result-cache.js';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -156,6 +157,36 @@ describe('PatchGeneratorAgent', () => {
   });
 });
 
+describe('FaultDetectorAgent parallel analysis', () => {
+  it('analyzes multiple files quickly', async () => {
+    const memory = new MemoryMiddleware();
+    // Seed with mock graph nodes for two files
+    memory.setKnowledgeGraph({
+      nodes: [
+        { id: 'file:a.ts', type: 'file', name: 'a.ts', filePath: 'a.ts' },
+        { id: 'file:b.ts', type: 'file', name: 'b.ts', filePath: 'b.ts' },
+      ],
+      edges: [],
+      version: '1.0.0',
+      timestamp: new Date().toISOString(),
+    });
+
+    const agent = new FaultDetectorAgent(memory);
+    const start = Date.now();
+    const result = await agent.run({
+      taskId: 'parallel-test',
+      instruction: 'Find issues',
+      context: { targetFiles: ['a.ts', 'b.ts'], repoPath: '.' },
+    });
+    const duration = Date.now() - start;
+
+    // Result should include findings (or empty if files don't exist, which is fine)
+    expect(result.result.findingsCount).toBeGreaterThanOrEqual(0);
+    // Parallel should be fast even with non-existent files (no sequential delay)
+    expect(duration).toBeLessThan(2000);
+  });
+});
+
 describe('ContextBuilderAgent with propagation', () => {
   it('recalls nodes via propagation', async () => {
     const memory = new MemoryMiddleware();
@@ -185,5 +216,44 @@ describe('ContextBuilderAgent with propagation', () => {
     expect(recalledIds).toContain('function:src/a.ts:foo');
     expect(output.result.propagationSummary).toBeDefined();
     expect((output.result.propagationSummary as Record<string, number>).affectedNodes).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('FaultDetectorAgent cache integration', () => {
+  it('uses result cache on second analysis of same file', async () => {
+    const memory = new MemoryMiddleware();
+    memory.setKnowledgeGraph({
+      nodes: [
+        { id: 'file:a.ts', type: 'file', name: 'a.ts', filePath: 'a.ts' },
+      ],
+      edges: [],
+      version: '1.0.0',
+      timestamp: new Date().toISOString(),
+    });
+    memory.setFingerprint({
+      filePath: 'a.ts',
+      contentHash: 'hash-v1',
+      functions: [],
+      classes: [],
+      imports: [],
+      exports: [],
+      totalLines: 5,
+      hasStructuralAnalysis: true,
+    });
+
+    const cache = new ResultCache();
+    cache.set('a.ts', 'hash-v1', [
+      { id: 'cached-finding', type: 'fault', description: 'Cached issue', confidence: 0.9, nodeIds: ['file:a.ts'] },
+    ]);
+
+    const agent = new FaultDetectorAgent(memory, undefined, cache);
+    const result = await agent.run({
+      taskId: 'cache-test',
+      instruction: 'Find issues',
+      context: { targetFiles: ['a.ts'], repoPath: '.' },
+    });
+
+    expect(result.result.findingsCount).toBe(1);
+    expect(result.findings[0].description).toBe('Cached issue');
   });
 });

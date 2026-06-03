@@ -4,16 +4,24 @@ import { TemplateLlmService, type LlmService } from '../core/llm-service.js';
 import { readFile } from 'fs/promises';
 import { resolve } from 'path';
 import { faultDetectorContextSchema, parseContext, type AgentInput, type Finding, type GraphNode } from '../core/types.js';
+import { ResultCache } from '../core/result-cache.js';
+import { ContextCompressor } from '../core/context-compressor.js';
 
 export class FaultDetectorAgent extends BaseAgent {
   private llmService: LlmService;
+  private resultCache = new ResultCache();
+  private contextCompressor = new ContextCompressor();
 
   constructor(
     private memory: MemoryMiddleware,
-    llmService?: LlmService
+    llmService?: LlmService,
+    resultCache?: ResultCache
   ) {
     super('fault-detector');
     this.llmService = llmService ?? new TemplateLlmService();
+    if (resultCache) {
+      this.resultCache = resultCache;
+    }
   }
 
   protected async execute(input: AgentInput): Promise<Record<string, unknown>> {
@@ -36,8 +44,11 @@ export class FaultDetectorAgent extends BaseAgent {
       ? targetFiles
       : [...new Set(graph.nodes.filter(n => n.filePath).map(n => n.filePath!))];
 
-    for (const filePath of filesToAnalyze) {
-      const fileFindings = await this.analyzeFileWithLlm(filePath, repoPath);
+    // Parallel analysis of multiple files (Phase 3: Batch Parallel)
+    const fileAnalysisResults = await Promise.all(
+      filesToAnalyze.map(filePath => this.analyzeFileWithLlm(filePath, repoPath))
+    );
+    for (const fileFindings of fileAnalysisResults) {
       findings.push(...fileFindings);
     }
 
@@ -73,23 +84,36 @@ export class FaultDetectorAgent extends BaseAgent {
   }
 
   private async analyzeFileWithLlm(filePath: string, repoPath: string): Promise<Finding[]> {
+    // Check result cache first (Phase 3: Result Cache) — skip I/O if unchanged
+    const fp = this.memory.getFingerprint(filePath);
+    if (fp) {
+      const cached = this.resultCache.get(filePath, fp.contentHash);
+      if (cached !== undefined) {
+        return cached;
+      }
+    }
+
     try {
       const absolutePath = resolve(repoPath, filePath);
       const content = await readFile(absolutePath, 'utf-8');
 
-      // Gather related code context (imported files)
-      const fp = this.memory.getFingerprint(filePath);
-      const relatedCode: { filePath: string; snippet: string }[] = [];
+      // Compress context for large files (Phase 3: Context Compression)
+      const codeForLlm = this.contextCompressor.compress(filePath, content, fp);
 
+      // Gather related code context (imported files)
+      const relatedCode: { filePath: string; snippet: string }[] = [];
       if (fp) {
         for (const imp of fp.imports) {
           if (imp.source.startsWith('.')) {
             const relatedPath = imp.source.replace(/\.js$/, '.ts');
             try {
               const relatedContent = await readFile(resolve(repoPath, relatedPath), 'utf-8');
+              const relatedFp = this.memory.getFingerprint(relatedPath);
               relatedCode.push({
                 filePath: relatedPath,
-                snippet: relatedContent.slice(0, 500), // Limit context size
+                snippet: relatedFp
+                  ? this.contextCompressor.compress(relatedPath, relatedContent, relatedFp)
+                  : relatedContent.slice(0, 500),
               });
             } catch {
               // Related file may not exist or be readable
@@ -100,19 +124,26 @@ export class FaultDetectorAgent extends BaseAgent {
 
       const result = await this.llmService.analyzeFault({
         filePath,
-        code: content,
+        code: codeForLlm,
         nodeType: 'file',
         nodeName: filePath.split('/').pop() || filePath,
         relatedCode,
       });
 
-      return result.findings.map((f, idx) => ({
+      const findings: Finding[] = result.findings.map((f, idx) => ({
         id: `finding-${filePath}-llm-${idx}`,
         type: f.type === 'security' ? 'fault' : f.type === 'bug' ? 'fault' : 'insight',
         description: f.description,
         confidence: f.confidence,
         nodeIds: [filePath],
       }));
+
+      // Cache findings for unchanged files (Phase 3: Result Cache)
+      if (fp) {
+        this.resultCache.set(filePath, fp.contentHash, findings);
+      }
+
+      return findings;
     } catch {
       // File may not exist or be readable
       return [];

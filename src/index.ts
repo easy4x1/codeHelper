@@ -26,6 +26,7 @@ import { ModelAwareTokenEstimator } from './core/token-estimator.js';
 import { GitExecutorAgent } from './agents/git-executor-agent.js';
 import { RootCauseAnalyzerAgent } from './agents/root-cause-analyzer-agent.js';
 import type { GitExecutionConfig } from './core/git-executor.js';
+import { SemanticCache } from './core/semantic-cache.js';
 
 export interface AgentConfig {
   verbose?: boolean;
@@ -55,6 +56,7 @@ export class CodeRepairAgent {
   private logger = createLogger('code-repair-agent');
   private llmService: LlmService;
   private budgetManager: TokenBudgetManager;
+  private semanticCache = new SemanticCache();
 
   constructor(config: AgentConfig = {}) {
     this.config = config;
@@ -137,6 +139,13 @@ export class CodeRepairAgent {
     const status = this.budgetManager.getStatus();
     this.logger.info(`Token budget: ${status.remaining} tokens remaining`);
 
+    // Phase 3: Semantic Cache — check for similar past tasks
+    const cachedPlan = this.semanticCache.findSimilar(task.description);
+    if (cachedPlan) {
+      this.logger.info('Semantic cache hit — returning cached plan');
+      return cachedPlan;
+    }
+
     const detector = new FaultDetectorAgent(this.memory, this.llmService);
     const detectorResult = await detector.run({
       taskId: task.id,
@@ -161,7 +170,16 @@ export class CodeRepairAgent {
 
     // ---- Web Search (Phase 3) ----
     let searchResults: Array<{ title: string; url: string; snippet: string; credibilityScore: number }> = [];
-    if (this.config.webSearch !== false && findings.length > 0) {
+    const budgetRecs = this.budgetManager.getRecommendations();
+    const shouldSearch = this.config.webSearch !== false && budgetRecs.adjustments.enableWebSearch !== false && findings.length > 0;
+
+    if (shouldSearch) {
+      this.logger.info('Web search enabled by budget and config');
+    } else if (budgetRecs.adjustments.enableWebSearch === false) {
+      this.logger.info('Web search disabled by token budget degradation');
+    }
+
+    if (shouldSearch) {
       const webSearcher = new WebSearcherAgent(this.memory);
       const searchOutput = await webSearcher.run({
         taskId: task.id,
@@ -228,7 +246,12 @@ export class CodeRepairAgent {
       this.logger.warn(`Token budget degradation: ${degradation.level} — ${degradation.message}`);
     }
 
-    return plannerResult.result.plan as SolutionPlan;
+    const plan = plannerResult.result.plan as SolutionPlan;
+
+    // Phase 3: Semantic Cache — store plan for future reuse
+    this.semanticCache.store(task.description, plan);
+
+    return plan;
   }
 
   async saveMemory(path: string): Promise<void> {
