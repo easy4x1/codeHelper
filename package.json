@@ -33,12 +33,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/easy4x1/code-repair-agent.git"
+    "url": "git+https://github.com/easy4x1/codingW1thMe.git"
   },
   "bugs": {
-    "url": "https://github.com/easy4x1/code-repair-agent/issues"
+    "url": "https://github.com/easy4x1/codingW1thMe/issues"
   },
-  "homepage": "https://github.com/easy4x1/code-repair-agent#readme",
+  "homepage": "https://github.com/easy4x1/codingW1thMe#readme",
   "publishConfig": {
     "access": "public"
   },
