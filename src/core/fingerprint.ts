@@ -210,6 +210,39 @@ function extractParameters(paramsNode: unknown): string[] {
   return params;
 }
 
+// Helper: collect callee identifier names from a subtree (function body).
+// Reduces member calls (a.b.foo()) to the trailing identifier (foo).
+function collectCallees(node: unknown): string[] {
+  const callees: string[] = [];
+  const walk = (n: unknown): void => {
+    if (!n) return;
+    if (getType(n) === 'call_expression') {
+      const fnText = getFieldText(n, 'function');
+      const name = fnText?.split('.').pop()?.trim();
+      if (name && /^[A-Za-z_$][\w$]*$/.test(name)) {
+        callees.push(name);
+      }
+    }
+    for (const child of getChildren(n)) {
+      walk(child);
+    }
+  };
+  walk(node);
+  return [...new Set(callees)];
+}
+
+// Helper: extract the superclass name from a class_declaration's heritage.
+function extractSuperClass(node: unknown): string | undefined {
+  for (const child of getChildren(node)) {
+    if (getType(child) === 'class_heritage') {
+      const text = (child as { text?: string }).text ?? '';
+      const match = text.match(/extends\s+([A-Za-z_$][\w$.]*)/);
+      if (match) return match[1].split('.').pop();
+    }
+  }
+  return undefined;
+}
+
 function extractTypeScript(rootNode: unknown): TreeSitterResult {
   const functions: FunctionSignature[] = [];
   const classes: ClassSignature[] = [];
@@ -253,6 +286,8 @@ function extractTypeScript(rootNode: unknown): TreeSitterResult {
         const name = getFieldText(node, 'name');
         if (name) {
           const params = extractParameters(getFieldNode(node, 'parameters'));
+          const body = (node as { childForFieldName?: (name: string) => unknown | null }).childForFieldName?.('body');
+          const calls = body ? collectCallees(body) : [];
           functions.push({
             name,
             params,
@@ -260,6 +295,7 @@ function extractTypeScript(rootNode: unknown): TreeSitterResult {
             isExported,
             startLine: getStartLine(node),
             endLine: getEndLine(node),
+            calls: calls.length > 0 ? calls : undefined,
           });
         }
         break;
@@ -292,6 +328,7 @@ function extractTypeScript(rootNode: unknown): TreeSitterResult {
             isExported,
             startLine: getStartLine(node),
             endLine: getEndLine(node),
+            superClass: extractSuperClass(node),
           });
         }
         break;
@@ -300,7 +337,8 @@ function extractTypeScript(rootNode: unknown): TreeSitterResult {
       case 'import_statement': {
         const source = getFieldText(node, 'source');
         if (source) {
-          const importClause = (node as { childForFieldName?: (name: string) => unknown | null }).childForFieldName?.('import_clause');
+          // `import_clause` is a child node, not a named field in tree-sitter-typescript.
+          const importClause = getChildren(node).find(c => getType(c) === 'import_clause');
           if (importClause) {
             // Named imports: import { foo, bar } from './module'
             for (const child of getChildren(importClause)) {
@@ -321,12 +359,15 @@ function extractTypeScript(rootNode: unknown): TreeSitterResult {
               }
               // Default import: import foo from './module'
               if (getType(child) === 'identifier') {
-                imports.push({
-                  source: stripQuotes(source),
-                  items: [child as string],
-                  isDefault: true,
-                  line: getStartLine(node),
-                });
+                const defaultName = (child as { text?: string }).text;
+                if (defaultName) {
+                  imports.push({
+                    source: stripQuotes(source),
+                    items: [defaultName],
+                    isDefault: true,
+                    line: getStartLine(node),
+                  });
+                }
               }
               // Namespace import: import * as foo from './module'
               if (getType(child) === 'namespace_import') {

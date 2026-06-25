@@ -87,6 +87,8 @@ export interface FunctionSignature {
   isExported: boolean;
   startLine: number;
   endLine: number;
+  /** Names of functions/methods invoked in the body (callee identifiers), used to build `calls` edges. */
+  calls?: string[];
 }
 
 export interface ClassSignature {
@@ -96,6 +98,8 @@ export interface ClassSignature {
   isExported: boolean;
   startLine: number;
   endLine: number;
+  /** Name of the superclass this class extends, used to build `inherits` edges. */
+  superClass?: string;
 }
 
 export interface ImportSignature {
@@ -478,6 +482,8 @@ export const faultDetectorContextSchema = z.object({
 
 export const contextBuilderContextSchema = z.object({
   nodeIds: z.array(z.string()),
+  /** Max BFS depth for propagation; injected from the token budget's degradation policy. 0 = no traversal. */
+  maxPropagationDepth: z.number().int().nonnegative().optional(),
 });
 
 export const rootCauseAnalyzerContextSchema = z.object({

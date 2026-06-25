@@ -116,6 +116,46 @@ func (u User) Greet() string {
     expect(fp.exports).toHaveLength(3); // Add + User + Greet (exported methods too)
   });
 
+  it('extracts named import items', () => {
+    const fp = computeFingerprint('src/c.ts', `import { Base, helper } from './base.js';\n`);
+    expect(fp.imports).toHaveLength(1);
+    expect(fp.imports[0].source).toBe('./base.js');
+    expect(fp.imports[0].items).toEqual(['Base', 'helper']);
+  });
+
+  it('extracts default import item', () => {
+    const fp = computeFingerprint('src/d.ts', `import express from 'express';\n`);
+    expect(fp.imports).toHaveLength(1);
+    expect(fp.imports[0].items).toEqual(['express']);
+    expect(fp.imports[0].isDefault).toBe(true);
+  });
+
+  it('extracts the superclass a class extends', () => {
+    const content = `import { Base } from './base';
+export class Child extends Base {
+  run() {}
+}
+`;
+    const fp = computeFingerprint('src/child.ts', content);
+    expect(fp.classes).toHaveLength(1);
+    expect(fp.classes[0].superClass).toBe('Base');
+  });
+
+  it('extracts callee names invoked inside a function body', () => {
+    const content = `import { helper } from './helper';
+export function caller() {
+  helper();
+  return local();
+}
+function local() { return 1; }
+`;
+    const fp = computeFingerprint('src/caller.ts', content);
+    const caller = fp.functions.find(f => f.name === 'caller');
+    expect(caller).toBeDefined();
+    expect(caller?.calls).toContain('helper');
+    expect(caller?.calls).toContain('local');
+  });
+
   it('computes fingerprint for Java file', () => {
     const content = `package com.example;
 
