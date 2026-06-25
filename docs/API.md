@@ -295,6 +295,65 @@ const budget = agent.getBudgetManager().getStatus();
 console.log(`${budget.remaining}/${budget.total} tokens remaining`);
 ```
 
+#### Closed-loop methods
+
+Besides `plan()` (analysis only), the agent exposes the full repair loop. All three
+share one orchestration path: **patch → review → apply → git → record**.
+
+```typescript
+// Full loop: analyze → plan → apply (+ optional git push)
+const outcome = await agent.repair(task, { push: true });
+
+// Apply a previously persisted plan by id
+const outcome = await agent.apply('plan-1718000000000', './my-project');
+
+// Apply an in-memory plan you already hold
+const outcome = await agent.applyPlan(plan, {
+  push: false,                       // skip git commit/push
+  review: async ({ patches }) => {   // gate before writing to disk
+    console.log(`About to write ${patches.length} file(s)`);
+    return true;                     // return false to abort
+  },
+});
+
+console.log(outcome.approved, outcome.applied, outcome.failed, outcome.git);
+```
+
+> The `review` gate is where interactive front-ends (CLI prompt, Web/IDE
+> confirmation UI) plug in. Omit it to approve automatically. The CLI `fix`
+> command injects a terminal prompt; programmatic callers can inject their own.
+
+#### `ApplyPlanOptions`
+
+```typescript
+interface ApplyPlanOptions {
+  dryRun?: boolean;   // generate patches but do not write to disk (default: false)
+  push?: boolean;     // run git commit/push after applying (default: true)
+  review?: (ctx: ReviewContext) => Promise<boolean>;  // gate before writing; default approves
+  record?: boolean;   // record the task into L3 learned memory (default: true)
+}
+
+interface ReviewContext {
+  plan: SolutionPlan;
+  patches: FilePatch[];
+  summary: { filesAdded: number; filesModified: number; filesDeleted: number };
+}
+```
+
+#### `RepairOutcome`
+
+```typescript
+interface RepairOutcome {
+  plan: SolutionPlan;
+  patches: FilePatch[];
+  summary: { filesAdded: number; filesModified: number; filesDeleted: number };
+  approved: boolean;          // false when dry-run or review gate rejected
+  applied: string[];          // file paths successfully written
+  failed: string[];           // file paths that failed to apply
+  git?: { success: boolean; messages: string[]; errors: string[] };  // present only when push ran
+}
+```
+
 ### `AgentConfig`
 
 ```typescript

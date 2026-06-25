@@ -1,14 +1,8 @@
-import type { SolutionPlan } from './types.js';
+import type { SolutionPlan, SemanticCacheEntry } from './types.js';
 import { createLogger } from '../utils/logger.js';
 import { getGlobalMetricsCollector } from './metrics.js';
 
 const logger = createLogger('semantic-cache');
-
-interface SemanticCacheEntry {
-  keywords: string[];
-  plan: SolutionPlan;
-  timestamp: string;
-}
 
 /**
  * SemanticCache — caches SolutionPlans keyed by task description keywords.
@@ -17,11 +11,19 @@ interface SemanticCacheEntry {
  * When a new task is sufficiently similar (> threshold) to a cached task,
  * the cached plan is returned directly, saving analysis + planning tokens.
  *
+ * Entries are persisted via MemoryMiddleware (export/load) so the cache
+ * survives across CLI invocations, not just within a single process.
+ *
  * Expected savings: 60-80% for recurring problem types.
  */
 export class SemanticCache {
   private entries: SemanticCacheEntry[] = [];
   private readonly defaultThreshold = 0.5;
+  private readonly maxEntries: number;
+
+  constructor(options?: { maxEntries?: number }) {
+    this.maxEntries = options?.maxEntries ?? 200;
+  }
 
   /**
    * Find a cached plan whose keywords have Jaccard similarity >= threshold
@@ -64,7 +66,24 @@ export class SemanticCache {
       plan: JSON.parse(JSON.stringify(plan)),
       timestamp: new Date().toISOString(),
     });
+    // Bound growth (entries are persisted to disk): drop oldest beyond cap.
+    if (this.entries.length > this.maxEntries) {
+      this.entries = this.entries.slice(-this.maxEntries);
+    }
     logger.info(`Stored plan ${plan.id} with ${keywords.length} keyword(s)`);
+  }
+
+  /** Export entries for persistence (deep-copied). */
+  export(): SemanticCacheEntry[] {
+    return JSON.parse(JSON.stringify(this.entries));
+  }
+
+  /** Replace entries from persisted storage (deep-copied). */
+  load(entries: SemanticCacheEntry[] | undefined): void {
+    this.entries = entries ? JSON.parse(JSON.stringify(entries)) : [];
+    if (this.entries.length > this.maxEntries) {
+      this.entries = this.entries.slice(-this.maxEntries);
+    }
   }
 
   /**

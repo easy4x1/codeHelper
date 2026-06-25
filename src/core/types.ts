@@ -201,6 +201,15 @@ export interface MemoryLayer {
   repoMemory: RepoMemory;
   taskContext: TaskContext;
   learnedMemory: LearnedMemory;
+  /** Cross-task plan cache keyed by description keywords (persisted for CLI reuse). */
+  semanticCache?: SemanticCacheEntry[];
+}
+
+/** One cached SolutionPlan keyed by the tokenized keywords of its task description. */
+export interface SemanticCacheEntry {
+  keywords: string[];
+  plan: SolutionPlan;
+  timestamp: string;
 }
 
 // ============================================
@@ -259,6 +268,46 @@ export interface FileChange {
   reasoning: string;
   originalCode?: string;
   modifiedCode?: string;
+}
+
+// ============================================
+// Repair Orchestration Types
+// ============================================
+
+import type { FilePatch, PatchResult } from './patch.js';
+
+/** Context passed to a review gate before patches are written to disk. */
+export interface ReviewContext {
+  plan: SolutionPlan;
+  patches: FilePatch[];
+  summary: PatchResult['summary'];
+}
+
+/** Options controlling how a SolutionPlan is turned into applied changes. */
+export interface ApplyPlanOptions {
+  /** Generate patches but do not write them to disk (default: false). */
+  dryRun?: boolean;
+  /** Run the git workflow (commit/push) after applying (default: true). */
+  push?: boolean;
+  /**
+   * Gate invoked before patches are written. Return `true` to apply,
+   * `false` to abort. Interactive front-ends inject their own prompt here.
+   * Omit to approve automatically.
+   */
+  review?: (ctx: ReviewContext) => Promise<boolean>;
+  /** Record the completed task into L3 learned memory (default: true). */
+  record?: boolean;
+}
+
+/** Structured result of applying a plan — front-ends render this. */
+export interface RepairOutcome {
+  plan: SolutionPlan;
+  patches: FilePatch[];
+  summary: PatchResult['summary'];
+  approved: boolean;
+  applied: string[];
+  failed: string[];
+  git?: { success: boolean; messages: string[]; errors: string[] };
 }
 
 // ============================================

@@ -102,28 +102,51 @@ const budget = agent.getBudgetManager().getStatus();
 console.log(`${budget.remaining}/${budget.total} tokens remaining`);
 ```
 
-### 4.2 完整交互式修复流程
+### 4.2 完整修复流程（plan → patch → apply → git）
 
 ```typescript
-// plan() 只生成方案，fix() 包含完整的 plan → patch → review → apply 流程
-const result = await agent.fix({
-  id: 'task-2',
-  description: 'Fix memory leak in user service',
-  type: 'bug',
-  priority: 'high',
-});
-// 这会触发交互式 diff Review，用户确认后才应用 patch
+// plan() 只生成方案；repair() 是完整闭环：分析 → 规划 → 打补丁 → 应用 → git
+const outcome = await agent.repair(
+  {
+    id: 'task-2',
+    description: 'Fix memory leak in user service',
+    type: 'bug',
+    priority: 'high',
+  },
+  {
+    push: true,                          // 应用后执行 git 提交/推送（默认 true）
+    review: async ({ patches }) => {     // 落地前的审核闸门
+      console.log(`即将修改 ${patches.length} 个文件`);
+      return true;                       // 返回 false 则中止，不写入磁盘
+    },
+  },
+);
+
+console.log(outcome.approved, outcome.applied, outcome.git);
+
+// 也可直接应用一个已持久化的方案：
+const applied = await agent.apply('plan-1718000000000', './my-project');
 ```
+
+> `review` 回调是交互式前端（CLI 提示、Web/IDE 确认 UI）的接入点；省略则自动批准。
+> 详见 [docs/API.md](docs/API.md) 的 `ApplyPlanOptions` / `RepairOutcome`。
 
 ### 4.3 批量任务
 
 ```typescript
-import { batchTasks } from 'code-repair-agent';
-
-await batchTasks(agent, [
+// 程序化批量：循环调用 repair()（共享同一 agent 实例，语义缓存命中可跨任务复用）
+const tasks = [
   { id: 't1', description: 'Fix auth null pointer', type: 'bug', priority: 'high' },
   { id: 't2', description: 'Refactor user service', type: 'refactor', priority: 'medium' },
-], { parallel: false, autoPush: false });
+] as const;
+
+for (const task of tasks) {
+  const outcome = await agent.repair(task, { push: false });  // push:true 则自动提交
+  console.log(`${task.id}: applied ${outcome.applied.length} file(s)`);
+}
+
+// 或直接用 CLI 批处理（JSON 任务列表，支持顺序/并行、--auto-push）：
+//   code-agent batch tasks.json --auto-push
 ```
 
 ### 4.4 增量同步

@@ -96,6 +96,8 @@ export class MetricsCollector {
 
     if (options?.autoFlushIntervalMs) {
       this.flushTimer = setInterval(() => this.flush(), options.autoFlushIntervalMs);
+      // Background flush must not keep the process alive after a CLI command finishes.
+      this.flushTimer.unref?.();
     }
   }
 

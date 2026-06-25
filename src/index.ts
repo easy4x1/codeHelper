@@ -13,7 +13,7 @@ import { writeFile, readFile, access, mkdir, stat } from 'fs/promises';
 import { join, resolve, dirname } from 'path';
 import { pathToFileURL } from 'url';
 import { createLogger } from './utils/logger.js';
-import type { RepairTask, SolutionPlan } from './core/types.js';
+import type { RepairTask, SolutionPlan, ApplyPlanOptions, RepairOutcome, ReviewContext } from './core/types.js';
 import { PatchGeneratorAgent } from './agents/patch-generator-agent.js';
 import { applyPatch, type FilePatch, type PatchResult } from './core/patch.js';
 import { syncRepo } from './core/sync.js';
@@ -105,6 +105,38 @@ export class CodeRepairAgent {
     return this.metrics;
   }
 
+  /**
+   * Infer the repository's primary language from fingerprints (falling back to
+   * the task's target files), so web-search queries are tagged correctly.
+   */
+  private detectPrimaryLanguage(task?: RepairTask): string {
+    const EXT_TO_LANG: Record<string, string> = {
+      ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
+      py: 'python', go: 'go', java: 'java', rb: 'ruby', php: 'php',
+      rs: 'rust', cs: 'csharp', cpp: 'cpp', c: 'c', kt: 'kotlin', swift: 'swift',
+    };
+    const counts = new Map<string, number>();
+    const tally = (path: string) => {
+      const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
+      const lang = EXT_TO_LANG[ext];
+      if (lang) counts.set(lang, (counts.get(lang) ?? 0) + 1);
+    };
+
+    for (const path of Object.keys(this.memory.getAllFingerprints())) tally(path);
+    if (counts.size === 0) {
+      for (const path of task?.context?.files ?? []) tally(path);
+    }
+
+    // Deliberate default bias (not a detected value): this project is
+    // TypeScript-first, so fall back to 'typescript' when nothing matched.
+    let best = 'typescript';
+    let bestCount = 0;
+    for (const [lang, count] of counts) {
+      if (count > bestCount) { best = lang; bestCount = count; }
+    }
+    return best;
+  }
+
   async init(repoPath: string): Promise<{ files: string[]; fingerprintCount: number }> {
     const resolvedPath = resolve(repoPath);
     const stats = await stat(resolvedPath);
@@ -150,7 +182,16 @@ export class CodeRepairAgent {
     };
   }
 
-  async plan(task: RepairTask): Promise<SolutionPlan> {
+  /**
+   * Analyze a task and produce a SolutionPlan (no changes applied).
+   *
+   * `options.recordMetric` controls whether this call emits its own `plan`
+   * task metric (default true). Workflow callers that record their own
+   * task metric — e.g. the CLI `fix` command which records a `fix` task —
+   * pass `false` so a single user action does not double-count as plan+fix.
+   */
+  async plan(task: RepairTask, options?: { recordMetric?: boolean }): Promise<SolutionPlan> {
+    const recordMetric = options?.recordMetric ?? true;
     const taskStart = Date.now();
     const recommendations = this.budgetManager.getRecommendations();
     if (!recommendations.shouldProceed) {
@@ -164,6 +205,11 @@ export class CodeRepairAgent {
     const cachedPlan = this.semanticCache.findSimilar(task.description);
     if (cachedPlan) {
       this.logger.info('Semantic cache hit — returning cached plan');
+      // Record the task so cache hits remain visible to metrics (0 tokens = the saving)
+      if (recordMetric) {
+        this.metrics.recordTask('plan', true, Date.now() - taskStart, 0);
+        await this.metrics.flush();
+      }
       return cachedPlan;
     }
 
@@ -207,7 +253,7 @@ export class CodeRepairAgent {
         instruction: 'Search web for solutions',
         context: {
           findings,
-          language: 'typescript',
+          language: this.detectPrimaryLanguage(task),
         },
       });
       searchResults = (searchOutput.result.searchResults as typeof searchResults) || [];
@@ -274,8 +320,10 @@ export class CodeRepairAgent {
 
     const taskDuration = Date.now() - taskStart;
     const tokensUsed = this.budgetManager.getStatus().used;
-    this.metrics.recordTask('plan', true, taskDuration, tokensUsed);
-    await this.metrics.flush();
+    if (recordMetric) {
+      this.metrics.recordTask('plan', true, taskDuration, tokensUsed);
+      await this.metrics.flush();
+    }
 
     return plan;
   }
@@ -283,6 +331,8 @@ export class CodeRepairAgent {
   async saveMemory(path: string): Promise<void> {
     // Sync token budget state into L2 for cross-session tracking
     this.memory.setTokenBudget(this.budgetManager.getStatus());
+    // Persist semantic cache so plan reuse survives across CLI invocations
+    this.memory.setSemanticCache(this.semanticCache.export());
     const serialized = this.memory.serialize();
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, serialized, 'utf-8');
@@ -297,6 +347,8 @@ export class CodeRepairAgent {
       if (savedBudget) {
         this.budgetManager.restoreSnapshot(savedBudget);
       }
+      // Hydrate semantic cache from persisted entries
+      this.semanticCache.load(this.memory.getSemanticCache());
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') {
@@ -358,6 +410,111 @@ export class CodeRepairAgent {
 
     return result;
   }
+
+  /**
+   * Turn a SolutionPlan into applied changes: patch → review → apply → git → record.
+   * This is the single orchestration path shared by `repair()`, `apply()` and the
+   * CLI fix/apply/batch commands. It performs no console I/O — interactive front-ends
+   * inject an `options.review` gate and render the returned RepairOutcome themselves.
+   */
+  async applyPlan(plan: SolutionPlan, options: ApplyPlanOptions = {}): Promise<RepairOutcome> {
+    const { dryRun = false, push = true, review, record = true } = options;
+
+    // 1. Generate patches from the plan
+    const patchGenerator = new PatchGeneratorAgent(this.memory, this.llmService);
+    const patchOutput = await patchGenerator.run({
+      taskId: plan.taskId,
+      instruction: 'Generate patches for the plan',
+      context: { plan },
+    });
+    const patches = patchOutput.result.patches as FilePatch[];
+    const summary = patchOutput.result.summary as PatchResult['summary'];
+
+    const outcome: RepairOutcome = {
+      plan,
+      patches,
+      summary,
+      approved: false,
+      applied: [],
+      failed: [],
+    };
+
+    // 2. Dry run — stop before touching disk
+    if (dryRun) {
+      return outcome;
+    }
+
+    // 3. Review gate (default: approve)
+    const approved = review ? await review({ plan, patches, summary }) : true;
+    if (!approved) {
+      return outcome;
+    }
+    outcome.approved = true;
+
+    // 4. Apply patches
+    const { applied, failed } = await this.applyPatches(patches);
+    outcome.applied = applied;
+    outcome.failed = failed;
+
+    // 5. Git workflow (commit/push)
+    if (push && applied.length > 0) {
+      const gitAgent = new GitExecutorAgent(this.config.git);
+      const gitOutput = await gitAgent.run({
+        taskId: `git-${Date.now()}`,
+        instruction: 'Commit and push changes',
+        context: { files: applied, description: plan.problem.description },
+      });
+      const g = gitOutput.result as { success: boolean; messages?: string[]; errors?: string[] };
+      outcome.git = { success: g.success, messages: g.messages || [], errors: g.errors || [] };
+    }
+
+    // 6. Record completed task into L3 learned memory
+    if (record) {
+      const learningAgent = new LearningAgent(this.memory);
+      learningAgent.recordTaskCompletion(
+        plan.taskId,
+        plan.problem.description,
+        applied,
+        plan.changes.length,
+        applied.length > 0,
+        undefined,
+        plan,
+      );
+    }
+
+    return outcome;
+  }
+
+  /** Load a persisted plan by id and apply it. Mirrors DESIGN §6.2 `apply()`. */
+  async apply(planId: string, repoPath: string, options: ApplyPlanOptions = {}): Promise<RepairOutcome> {
+    const plan = await this.loadPlan(planId, repoPath);
+    if (!plan) {
+      throw new Error(`Plan not found: ${planId}`);
+    }
+    return this.applyPlan(plan, options);
+  }
+
+  /** Full closed loop: analyze → plan → apply. Mirrors DESIGN §6.2 `repair()`. */
+  async repair(task: RepairTask, options: ApplyPlanOptions = {}): Promise<RepairOutcome> {
+    const plan = await this.plan(task);
+    return this.applyPlan(plan, options);
+  }
+}
+
+/**
+ * Render the git portion of a RepairOutcome to the terminal.
+ * Returns false when the git workflow ran and failed (caller decides on exit code).
+ */
+function printGitOutcome(outcome: RepairOutcome): boolean {
+  if (!outcome.git) return true;
+  if (outcome.git.success) {
+    console.log('\n✅ Git workflow complete');
+    for (const msg of outcome.git.messages) console.log(`  → ${msg}`);
+    return true;
+  }
+  console.log('\n⚠️ Git workflow failed');
+  for (const err of outcome.git.errors) console.log(`  ✗ ${err}`);
+  return false;
 }
 
 // CLI setup
@@ -562,57 +719,24 @@ async function main(): Promise<void> {
         console.log(`Problem: ${plan.problem.description}`);
         console.log(`Changes: ${plan.changes.length} file(s)`);
 
-        // Generate patches from plan
-        const patchGenerator = new PatchGeneratorAgent(agent.getMemory());
-        const patchResult = await patchGenerator.run({
-          taskId: plan.taskId,
-          instruction: 'Generate patches for the plan',
-          context: { plan },
-        });
-
-        const patches = patchResult.result.patches as FilePatch[];
+        const outcome = await agent.applyPlan(plan, { dryRun: options.dryRun, push: true });
 
         if (options.dryRun) {
           console.log('\n--- Dry Run (no changes applied) ---');
-          for (const patch of patches) {
+          for (const patch of outcome.patches) {
             console.log(formatDiff(patch));
           }
           return;
         }
 
-        // Apply patches
-        const result = await agent.applyPatches(patches);
-        console.log(`\nApplied: ${result.applied.length} file(s)`);
-        if (result.failed.length > 0) {
-          console.log(`Failed: ${result.failed.join(', ')}`);
+        console.log(`\nApplied: ${outcome.applied.length} file(s)`);
+        if (outcome.failed.length > 0) {
+          console.log(`Failed: ${outcome.failed.join(', ')}`);
           process.exit(1);
         }
 
-        // Git execution
-        if (result.applied.length > 0) {
-          const gitAgent = new GitExecutorAgent();
-          const gitResult = await gitAgent.run({
-            taskId: `git-${Date.now()}`,
-            instruction: 'Commit and push changes',
-            context: {
-              files: result.applied,
-              description: plan.problem.description,
-            },
-          });
-
-          const gitOutput = gitResult.result as { success: boolean; messages?: string[]; errors?: string[] };
-          if (gitOutput.success) {
-            console.log('\n✅ Git workflow complete');
-            for (const msg of gitOutput.messages || []) {
-              console.log(`  → ${msg}`);
-            }
-          } else {
-            console.log('\n⚠️ Git workflow failed');
-            for (const err of gitOutput.errors || []) {
-              console.log(`  ✗ ${err}`);
-            }
-            process.exit(1);
-          }
+        if (!printGitOutcome(outcome)) {
+          process.exit(1);
         }
       } catch (err) {
         console.error(err);
@@ -662,7 +786,9 @@ async function main(): Promise<void> {
           },
         };
 
-        const plan = await agent.plan(task);
+        // This is the `fix` workflow; it records its own `fix` task metric
+        // below, so suppress the inner `plan` metric to avoid double-counting.
+        const plan = await agent.plan(task, { recordMetric: false });
         console.log('\n=== Solution Plan ===\n');
         console.log(`ID: ${plan.id}`);
         console.log(`Problem: ${plan.problem.description}`);
@@ -672,96 +798,54 @@ async function main(): Promise<void> {
           console.log(`  - ${change.filePath}: ${change.description}`);
         }
 
-        // Step 2: Generate patches
-        const patchGenerator = new PatchGeneratorAgent(agent.getMemory());
-        const patchResult = await patchGenerator.run({
-          taskId: task.id,
-          instruction: 'Generate patches for the plan',
-          context: { plan },
-        });
+        // Step 2: Review gate — show patches/diffs, then confirm (interactive)
+        const review = async (ctx: ReviewContext): Promise<boolean> => {
+          console.log(formatPatchResult({ patches: ctx.patches, summary: ctx.summary }));
+          for (const patch of ctx.patches) {
+            console.log(formatDiff(patch));
+          }
 
-        const patches = patchResult.result.patches as FilePatch[];
-        const patchSummary = patchResult.result.summary as PatchResult['summary'];
+          if (options.autoPush) {
+            console.log('Auto-applying (auto-push flag set)...');
+            return true;
+          }
 
-        console.log(formatPatchResult({ patches, summary: patchSummary }));
-
-        // Step 3: Show diffs
-        for (const patch of patches) {
-          console.log(formatDiff(patch));
-        }
-
-        // Step 4: Review prompt
-        let appliedFiles: string[] = [];
-
-        if (options.autoPush) {
-          console.log('Auto-applying (auto-push flag set)...');
-          const result = await agent.applyPatches(patches);
-          console.log(`Applied: ${result.applied.length}, Failed: ${result.failed.length}`);
-          appliedFiles = result.applied;
-        } else {
           const rl = createInterface({ input: process.stdin, output: process.stdout });
           const answer = await new Promise<string>((resolve) => {
             rl.question(createReviewPrompt(), resolve);
           });
           rl.close();
 
-          if (answer.toLowerCase() === 'a' || answer.toLowerCase() === 'approve') {
-            const result = await agent.applyPatches(patches);
-            console.log(`\nApplied: ${result.applied.length} file(s)`);
-            if (result.failed.length > 0) {
-              console.log(`Failed: ${result.failed.join(', ')}`);
-            }
-            appliedFiles = result.applied;
-          } else {
+          const approved = answer.toLowerCase() === 'a' || answer.toLowerCase() === 'approve';
+          if (!approved) {
             console.log('Changes rejected. No files modified.');
           }
-        }
+          return approved;
+        };
 
-        // Step 5: Git execution (Phase 4)
-        if (appliedFiles.length > 0) {
-          const gitAgent = new GitExecutorAgent();
-          const gitResult = await gitAgent.run({
-            taskId: `git-${Date.now()}`,
-            instruction: 'Commit and push changes',
-            context: {
-              files: appliedFiles,
-              description: task.description,
-            },
-          });
+        // Step 3: Patch → review → apply → git → record (single orchestration path)
+        const outcome = await agent.applyPlan(plan, { review, push: true, record: true });
 
-          const result = gitResult.result as { success: boolean; messages?: string[]; errors?: string[] };
-          if (result.success) {
-            console.log('\n✅ Git workflow complete');
-            for (const msg of result.messages || []) {
-              console.log(`  → ${msg}`);
-            }
-          } else {
-            console.log('\n⚠️ Git workflow failed');
-            for (const err of result.errors || []) {
-              console.log(`  ✗ ${err}`);
-            }
+        if (outcome.approved) {
+          console.log(`\nApplied: ${outcome.applied.length} file(s)`);
+          if (outcome.failed.length > 0) {
+            console.log(`Failed: ${outcome.failed.join(', ')}`);
           }
         }
-
-        // Record task for learning (Phase 5)
-        const learningAgent = new LearningAgent(agent.getMemory());
-        learningAgent.recordTaskCompletion(
-          task.id,
-          task.description,
-          task.context?.files || [],
-          plan.changes.length,
-          appliedFiles.length > 0,
-          undefined,
-          plan
-        );
+        const gitOk = printGitOutcome(outcome);
 
         // Record metrics
         const fixDuration = Date.now() - fixStart;
         const tokensUsed = agent.getBudgetManager().getStatus().used;
-        agent.getMetrics().recordTask('fix', appliedFiles.length > 0, fixDuration, tokensUsed);
+        agent.getMetrics().recordTask('fix', outcome.applied.length > 0, fixDuration, tokensUsed);
         await agent.getMetrics().flush();
 
         await agent.saveMemory(memoryPath);
+
+        // Consistent with `apply`: non-zero exit when the git workflow ran and failed
+        if (!gitOk) {
+          process.exit(1);
+        }
       } catch (err) {
         console.error(err);
         process.exit(1);
@@ -847,32 +931,9 @@ async function main(): Promise<void> {
             console.log(`  Plan: ${plan.id} (${plan.changes.length} change(s))`);
 
             if (autoPush) {
-              // Auto-apply: load plan → patch → apply → git
-              const loadedPlan = await agent.loadPlan(plan.id, options.repo);
-              if (!loadedPlan) {
-                throw new Error(`Failed to load plan: ${plan.id}`);
-              }
-
-              const patchGenerator = new PatchGeneratorAgent(agent.getMemory());
-              const patchResult = await patchGenerator.run({
-                taskId,
-                instruction: 'Generate patches',
-                context: { plan: loadedPlan },
-              });
-
-              const patches = patchResult.result.patches as FilePatch[];
-              const applyResult = await agent.applyPatches(patches);
-
-              if (applyResult.applied.length > 0) {
-                const gitAgent = new GitExecutorAgent();
-                await gitAgent.run({
-                  taskId: `git-${Date.now()}`,
-                  instruction: 'Commit batch changes',
-                  context: {
-                    files: applyResult.applied,
-                    description: taskDesc,
-                  },
-                });
+              // Auto-apply via the shared orchestration path (default approve).
+              const outcome = await agent.applyPlan(plan, { push: true, record: true });
+              if (outcome.applied.length > 0) {
                 console.log(`  ✅ Applied + committed`);
               }
             } else {

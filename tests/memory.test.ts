@@ -66,6 +66,17 @@ describe('MemoryMiddleware', () => {
     expect(restored.getFingerprint('src/foo.ts')).toEqual(fp);
     expect(restored.getTaskContext().taskId).toBe('task-1');
   });
+
+  it('persists semantic cache entries through serialization', () => {
+    memory.setSemanticCache([
+      { keywords: ['null', 'auth'], plan: { id: 'p1' } as never, timestamp: '2026-06-25T00:00:00.000Z' },
+    ]);
+
+    const restored = MemoryMiddleware.deserialize(memory.serialize());
+    const entries = restored.getSemanticCache();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].keywords).toEqual(['null', 'auth']);
+  });
 });
 
 describe('LearnedMemory (L3) — Phase 5', () => {

@@ -11,6 +11,7 @@ import type {
   FaultPattern,
   FixPattern,
   Convention,
+  SemanticCacheEntry,
 } from './types.js';
 
 const DEFAULT_REPO_MEMORY: RepoMemory = {
@@ -38,6 +39,7 @@ export class MemoryMiddleware {
   private repoMemory: RepoMemory;
   private taskContext: TaskContext;
   private learnedMemory: LearnedMemory;
+  private semanticCache: SemanticCacheEntry[];
 
   constructor(layer?: Partial<MemoryLayer>) {
     this.repoMemory = layer?.repoMemory ? { ...layer.repoMemory } : { ...DEFAULT_REPO_MEMORY };
@@ -47,6 +49,18 @@ export class MemoryMiddleware {
     this.learnedMemory = layer?.learnedMemory
       ? JSON.parse(JSON.stringify(layer.learnedMemory))
       : { ...DEFAULT_LEARNED_MEMORY, taskHistory: [], faultPatterns: [], fixPatterns: [], projectConventions: [] };
+    this.semanticCache = layer?.semanticCache
+      ? JSON.parse(JSON.stringify(layer.semanticCache))
+      : [];
+  }
+
+  // Semantic Cache (cross-task plan reuse, persisted)
+  getSemanticCache(): SemanticCacheEntry[] {
+    return JSON.parse(JSON.stringify(this.semanticCache));
+  }
+
+  setSemanticCache(entries: SemanticCacheEntry[]): void {
+    this.semanticCache = JSON.parse(JSON.stringify(entries));
   }
 
   // Repo Memory (L1)
@@ -200,6 +214,7 @@ export class MemoryMiddleware {
         analyzedFiles: Array.from(this.taskContext.analyzedFiles),
       } as unknown as TaskContext,
       learnedMemory: this.learnedMemory,
+      semanticCache: this.semanticCache,
     };
     return JSON.stringify(layer, null, 2);
   }
@@ -213,6 +228,7 @@ export class MemoryMiddleware {
         analyzedFiles: new Set(parsed.taskContext.analyzedFiles as unknown as string[]),
       },
       learnedMemory: parsed.learnedMemory,
+      semanticCache: parsed.semanticCache,
     });
   }
 }

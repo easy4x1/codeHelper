@@ -266,7 +266,7 @@
 |------|---------|------|------|
 | **Fingerprint 跳过** | 80-95% 节省 | ✅ **已实现** | `syncRepo` 自动跳过未变化文件 |
 | **故障传播裁剪** | 70-90% 节省 | ✅ **已实现** | `PropagationEngine` 自动裁剪分析集 |
-| **语义缓存** | 60-80% 节省 | ✅ **新增** | `SemanticCache` Jaccard 关键词相似度复用历史 plan |
+| **语义缓存** | 60-80% 节省 | ✅ **跨进程持久化** | `SemanticCache` Jaccard 关键词相似度复用历史 plan，entries 序列化进 `memory.json`，CLI 跨命令命中 |
 | **增量图谱更新** | 90%+ 节省 | ✅ **已实现** | `syncRepo` 仅更新变化文件节点 |
 | **搜索降级** | 100% 搜索 token 节省 | ✅ **新增** | `plan()` 集成 budget `enableWebSearch` 建议 |
 | **上下文压缩** | 50-70% 节省 | ✅ **新增** | `ContextCompressor` 大文件结构摘要 |
@@ -288,7 +288,7 @@
 | `tests/agents.test.ts` | 8 | 8 个专用 Agent（含 PatchGenerator + 传播集成 + 并行分析 + 缓存集成 + LearningAgent） |
 | `tests/cli.test.ts` | 14 | CLI 入口 + 内存持久化 + apply + 预算测试 + 搜索降级 + history/learn |
 | `tests/result-cache.test.ts` | 5 | 结果缓存（hit/miss/hash-change/deep-copy/clear） |
-| `tests/semantic-cache.test.ts` | 6 | 语义缓存（Jaccard 相似度 + plan 复用） |
+| `tests/semantic-cache.test.ts` | 9 | 语义缓存（Jaccard 相似度 + plan 复用 + export/load 持久化 + 淘汰） |
 | `tests/context-compressor.test.ts` | 4 | 上下文压缩（小文件透传 + 大文件摘要 + fallback） |
 | `tests/pattern-extractor.test.ts` | 3 | 模式提取（fault/fix 模式 + 归一化） |
 | `tests/convention-learner.test.ts` | 3 | 约定学习（camelCase/PascalCase/测试命名） |
@@ -306,7 +306,8 @@
 | **`tests/patch-llm.test.ts`** | **3** | **LLM generatePatch（Template + Anthropic）** |
 | **`tests/git-executor.test.ts`** | **4** | **GitExecutor 配置 + 安全策略** |
 | **`tests/root-cause-analyzer-agent.test.ts`** | **4** | **RootCauseAnalyzerAgent 根因分析** |
-| **总计** | **202** | **28 个模块** |
+| **`tests/repair-orchestration.test.ts`** | **7** | **applyPlan/apply/repair 统一编排（review 闸门 + dry-run + 学习记录）** |
+| **总计** | **228** | **30 个测试文件** |
 
 ---
 
@@ -387,6 +388,11 @@
 43. **全局 Metrics 框架** — `MetricsCollector`：Agent 性能 + Token 追踪 + 缓存命中率 + 解析器覆盖率 + 图谱规模 + 增量节省
 44. **`code-agent metrics` 命令** — 终端展示所有性能指标，支持 `--json` 和 `--reset`
 45. **Tavily Web Search** — `@tavily/core` 替换 DuckDuckGo，keyless mode + API key 支持，DuckDuckGo 降级链保留
+46. **核心修复 API 上提** — `CodeRepairAgent.applyPlan/apply/repair` 统一 patch→review→apply→git→record 编排（DESIGN §6.2），CLI fix/apply/batch 去重；交互式 review 改为注入回调
+47. **语义缓存跨进程持久化** — `SemanticCache` entries 序列化进 `memory.json`（export/load + 200 条上限淘汰），CLI 跨命令命中生效；缓存命中也记录 metrics
+48. **LLM 补丁生成接通** — `applyPlan` 向 `PatchGeneratorAgent` 注入 `llmService`，方案缺代码时可调用 LLM 生成 diff（原先不可达）
+49. **主语言自动探测** — `detectPrimaryLanguage()` 从指纹/目标文件扩展名推断，替换 web search 写死的 `language: 'typescript'`
+50. **metrics 定时器 `unref()`** — 修复所有成功 CLI 命令结束后进程悬挂的预存 bug；`fix` 与 `apply` 的 git 失败退出码统一
 
 ### 6.2 剩余重要工作（按优先级）
 
@@ -515,7 +521,7 @@ src/
     ├── logger.ts                  36 行  (日志)
     └── hash.ts                     5 行  (哈希)
 
-总计: ~5,800 行代码 + **213** 个测试（**29** 个测试文件）
+总计: ~5,900 行代码 + **228** 个测试（**30** 个测试文件）
 ```
 
 ---

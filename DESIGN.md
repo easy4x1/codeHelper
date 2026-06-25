@@ -607,21 +607,28 @@ class CodeRepairAgent {
   // 初始化仓库
   async init(repoPath: string): Promise<InitResult>;
 
-  // 执行修复任务
-  async repair(task: RepairTask): Promise<RepairResult>;
+  // 执行修复任务（完整闭环：plan → applyPlan）
+  async repair(task: RepairTask, options?: ApplyPlanOptions): Promise<RepairOutcome>;
 
-  // 生成方案（不执行）
-  async plan(task: RepairTask): Promise<SolutionPlan>;
+  // 生成方案（不执行）；recordMetric 控制是否记录 plan 指标（fix 工作流传 false 避免双发）
+  async plan(task: RepairTask, options?: { recordMetric?: boolean }): Promise<SolutionPlan>;
 
-  // 应用方案
-  async apply(planId: string, options: ApplyOptions): Promise<ApplyResult>;
+  // 应用已持久化的方案（按 id 从仓库加载）
+  async apply(planId: string, repoPath: string, options?: ApplyPlanOptions): Promise<RepairOutcome>;
 
-  // 增量同步
-  async sync(): Promise<SyncResult>;
+  // 应用一个内存中的方案：patch → review → apply → git → record
+  async applyPlan(plan: SolutionPlan, options?: ApplyPlanOptions): Promise<RepairOutcome>;
 
   // 查询状态
   status(): AgentStatus;
 }
+```
+
+> **实现差异说明（与上文契约对齐）**
+>
+> 1. **`apply()` 增加 `repoPath` 参数** — 方案以 `<repo>/.repair-agent/plans/` 持久化,按 id 加载时必须知道目标仓库,故实际签名为 `apply(planId, repoPath, options)`。
+> 2. **`sync()` 未挂在类上** — 增量同步实现为独立函数 `syncRepo()`(`src/core/sync.ts`)+ `code-agent sync` CLI 命令,而非 `CodeRepairAgent` 方法;`init`/`repair` 等闭环 API 不依赖它。
+> 3. **`repair()`/`apply()` 统一返回 `RepairOutcome`** — 三个入口(`repair`/`apply`/CLI fix/apply/batch)共享单一编排路径 `applyPlan()`(patch → review → apply → git → record),`RepairResult`/`ApplyResult` 已合并为 `RepairOutcome`。
 
 // 任务定义
 interface RepairTask {

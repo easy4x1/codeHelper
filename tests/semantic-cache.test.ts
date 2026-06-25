@@ -61,4 +61,33 @@ describe('SemanticCache', () => {
     expect(cache.findSimilar('Fix null dereference')?.id).toBe('plan-1');
     expect(cache.findSimilar('Remove unused variables')?.id).toBe('plan-2');
   });
+
+  it('export/load round-trips entries across instances', () => {
+    const source = new SemanticCache();
+    source.store('Fix null dereference in auth module', samplePlan);
+
+    const restored = new SemanticCache();
+    restored.load(source.export());
+
+    expect(restored.size()).toBe(1);
+    expect(restored.findSimilar('auth module null pointer fix')?.id).toBe('plan-1');
+  });
+
+  it('load(undefined) yields an empty cache', () => {
+    const c = new SemanticCache();
+    c.store('whatever problem here', samplePlan);
+    c.load(undefined);
+    expect(c.size()).toBe(0);
+  });
+
+  it('evicts oldest entries beyond maxEntries', () => {
+    const c = new SemanticCache({ maxEntries: 2 });
+    c.store('first unique alpha problem', { ...samplePlan, id: 'p1' });
+    c.store('second unique bravo problem', { ...samplePlan, id: 'p2' });
+    c.store('third unique charlie problem', { ...samplePlan, id: 'p3' });
+    expect(c.size()).toBe(2);
+    // oldest ("alpha") evicted
+    expect(c.findSimilar('first unique alpha problem')).toBeUndefined();
+    expect(c.findSimilar('third unique charlie problem')?.id).toBe('p3');
+  });
 });
