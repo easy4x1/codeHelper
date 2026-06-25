@@ -13,7 +13,7 @@
 | Phase 1: MVP（核心闭环）| 核心 Agent + CLI + 基础图谱 + Patch/Review 流程 | **100%** |
 | Phase 2: 记忆优化 | Fingerprint 增量、传播裁剪、Token 预算 | **100%** |
 | Phase 3: 联网增强 | Web Search、结果融合、LLM Patch 生成、搜索降级、Batch 并行、结果缓存、语义缓存、上下文压缩 | **100%** |
-| Phase 4: 自动化与集成 | Git 自动化、CI/CD、批量任务 | **核心完成 (~70%)** |
+| Phase 4: 自动化与集成 | Git 自动化、CI/CD、批量任务 | **核心完成 (~85%)** |
 | Phase 5: 学习与进化 | 模式提取、项目约定学习、个性化推荐 | **100%** |
 
 **整体完成度: ~95%**
@@ -257,8 +257,10 @@
 | **`code-agent sync [repo-path]`** | **增量同步** | ✅ **新增** | 自动检测变更并增量更新 |
 | `code-agent plan <description> --budget` | Token 预算控制 | ✅ **新增** | `--budget <tokens>` 自定义预算 |
 | **`code-agent plan <description> --web-search`** | **联网搜索** | ✅ **新增** | `--web-search` / `--no-web-search` 控制 |
-| `code-agent history` | 查看历史任务 | ❌ **未实现** | 计划 Phase 5 |
-| `code-agent learn` | 学习模式 | ❌ **未实现** | 计划 Phase 5 |
+| `code-agent history` | 查看历史任务 | ✅ **已完成** | 展示任务历史、故障模式、项目约定 |
+| `code-agent learn` | 学习模式 | ✅ **已完成** | 从代码库学习项目约定并持久化 |
+| **`code-agent batch <tasks.json>`** | **批量任务处理** | ✅ **已完成** | 顺序/并行模式，autoPush 支持 |
+| **`code-agent metrics`** | **性能指标** | ✅ **已完成** | 终端展示指标，支持 `--json` / `--reset` |
 
 ### 3.6 Token 优化策略
 
@@ -304,12 +306,12 @@
 | **`tests/web-search.test.ts`** | **13** | **Web 搜索引擎（查询构建 + 模拟搜索 + 策略）** |
 | **`tests/web-searcher-agent.test.ts`** | **3** | **WebSearcherAgent 集成** |
 | **`tests/patch-llm.test.ts`** | **3** | **LLM generatePatch（Template + Anthropic）** |
-| **`tests/git-executor.test.ts`** | **4** | **GitExecutor 配置 + 安全策略** |
+| **`tests/git-executor.test.ts`** | **13** | **GitExecutor 配置 + 安全策略 + remote URL 解析 + PR compare URL 构建** |
 | **`tests/root-cause-analyzer-agent.test.ts`** | **4** | **RootCauseAnalyzerAgent 根因分析** |
 | **`tests/repair-orchestration.test.ts`** | **7** | **applyPlan/apply/repair 统一编排（review 闸门 + dry-run + 学习记录）** |
 | **`tests/graph-build.test.ts`** | **6** | **图谱构建：跨文件 calls/inherits 边 + 符号级 import 解析 + 外部 module 节点** |
 | **`tests/context-builder-agent.test.ts`** | **3** | **ContextBuilder 返回 propagationResult + maxPropagationDepth 联动（含 0 深度降级）** |
-| **总计** | **241** | **32 个测试文件** |
+| **总计** | **250** | **32 个测试文件** |
 
 ---
 
@@ -400,6 +402,7 @@
 53. **`propagationResult` 接入根因分析** — `ContextBuilderAgent` 返回完整 `propagationResult`（affectedNodes + rootCauseCandidates），`plan()` 捕获并传给 `RootCauseAnalyzerAgent`（此前丢弃，根因传播洞察恒为空）
 54. **预算降级 → 传播深度联动** — `plan()` 将 `TokenBudget` 的 `maxPropagationDepth` 注入 `ContextBuilder`（经 schema 校验，支持 0 深度=不传播），不再写死默认 3
 55. **修复 import 提取预存 bug** — `import_clause` 是子节点而非命名字段，`childForFieldName` 恒返回 null 导致 named/default import 的 `items` 始终为空（此前无测试覆盖）；改为按子节点类型查找，default import 取 `.text` 而非节点对象。此 bug 此前使 #51/#52 的跨文件解析在运行时失效
+56. **PR 自动创建** — `GitExecutor.createPullRequest`：优先 `gh pr create`（带 title/body/base/head），`gh` 不可用或失败时降级为手动 compare URL；新增纯函数 `parseRemoteUrl`（SSH/HTTPS/自托管）+ `buildCompareUrl`，`execute()` 在 push 后按 `push.createPR` 触发（protected 分支自动跳过）；`prUrl` 经 GitExecutorAgent → `RepairOutcome.git` 贯通至 CLI 输出；`code-agent fix --create-pr` 标志接入。关闭 Phase 4 最后实质缺口
 
 ### 6.2 剩余重要工作（按优先级）
 
@@ -528,7 +531,7 @@ src/
     ├── logger.ts                  36 行  (日志)
     └── hash.ts                     5 行  (哈希)
 
-总计: ~6,100 行代码 + **241** 个测试（**32** 个测试文件）
+总计: ~6,100 行代码 + **250** 个测试（**32** 个测试文件）
 ```
 
 ---
