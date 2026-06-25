@@ -24,6 +24,7 @@ export class GitExecutorAgent extends BaseAgent {
       branch: result.branch,
       commitHash: result.commitHash,
       pushed: result.pushed,
+      prUrl: result.prUrl,
       messages: result.messages,
       errors: result.errors,
     };

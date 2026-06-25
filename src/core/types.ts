@@ -207,12 +207,21 @@ export interface MemoryLayer {
   learnedMemory: LearnedMemory;
   /** Cross-task plan cache keyed by description keywords (persisted for CLI reuse). */
   semanticCache?: SemanticCacheEntry[];
+  /** Cross-task analysis-result cache keyed by filePath::contentHash (persisted, LRU-capped). */
+  resultCache?: ResultCacheEntry[];
 }
 
 /** One cached SolutionPlan keyed by the tokenized keywords of its task description. */
 export interface SemanticCacheEntry {
   keywords: string[];
   plan: SolutionPlan;
+  timestamp: string;
+}
+
+/** One cached analysis result keyed by `filePath::contentHash`. */
+export interface ResultCacheEntry {
+  key: string;
+  findings: Finding[];
   timestamp: string;
 }
 
@@ -311,7 +320,7 @@ export interface RepairOutcome {
   approved: boolean;
   applied: string[];
   failed: string[];
-  git?: { success: boolean; messages: string[]; errors: string[] };
+  git?: { success: boolean; messages: string[]; errors: string[]; prUrl?: string };
 }
 
 // ============================================

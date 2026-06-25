@@ -27,6 +27,7 @@ import { GitExecutorAgent } from './agents/git-executor-agent.js';
 import { RootCauseAnalyzerAgent } from './agents/root-cause-analyzer-agent.js';
 import type { GitExecutionConfig } from './core/git-executor.js';
 import { SemanticCache } from './core/semantic-cache.js';
+import { ResultCache } from './core/result-cache.js';
 import { LearningAgent } from './agents/learning-agent.js';
 import { MetricsCollector, setGlobalMetricsCollector } from './core/metrics.js';
 
@@ -59,6 +60,7 @@ export class CodeRepairAgent {
   private llmService: LlmService;
   private budgetManager: TokenBudgetManager;
   private semanticCache = new SemanticCache();
+  private resultCache = new ResultCache();
   private metrics: MetricsCollector;
 
   constructor(config: AgentConfig = {}) {
@@ -199,7 +201,7 @@ export class CodeRepairAgent {
       return cachedPlan;
     }
 
-    const detector = new FaultDetectorAgent(this.memory, this.llmService);
+    const detector = new FaultDetectorAgent(this.memory, this.llmService, this.resultCache);
     const detectorResult = await detector.run({
       taskId: task.id,
       instruction: task.description,
@@ -327,6 +329,8 @@ export class CodeRepairAgent {
     this.memory.setTokenBudget(this.budgetManager.getStatus());
     // Persist semantic cache so plan reuse survives across CLI invocations
     this.memory.setSemanticCache(this.semanticCache.export());
+    // Persist result cache so unchanged-file analysis reuse survives across runs
+    this.memory.setResultCache(this.resultCache.export());
     const serialized = this.memory.serialize();
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, serialized, 'utf-8');
@@ -343,6 +347,8 @@ export class CodeRepairAgent {
       }
       // Hydrate semantic cache from persisted entries
       this.semanticCache.load(this.memory.getSemanticCache());
+      // Hydrate result cache from persisted entries
+      this.resultCache.load(this.memory.getResultCache());
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') {
@@ -458,8 +464,8 @@ export class CodeRepairAgent {
         instruction: 'Commit and push changes',
         context: { files: applied, description: plan.problem.description },
       });
-      const g = gitOutput.result as { success: boolean; messages?: string[]; errors?: string[] };
-      outcome.git = { success: g.success, messages: g.messages || [], errors: g.errors || [] };
+      const g = gitOutput.result as { success: boolean; messages?: string[]; errors?: string[]; prUrl?: string };
+      outcome.git = { success: g.success, messages: g.messages || [], errors: g.errors || [], prUrl: g.prUrl };
     }
 
     // 6. Record completed task into L3 learned memory
@@ -504,6 +510,7 @@ function printGitOutcome(outcome: RepairOutcome): boolean {
   if (outcome.git.success) {
     console.log('\n✅ Git workflow complete');
     for (const msg of outcome.git.messages) console.log(`  → ${msg}`);
+    if (outcome.git.prUrl) console.log(`\n🔗 Pull request: ${outcome.git.prUrl}`);
     return true;
   }
   console.log('\n⚠️ Git workflow failed');
@@ -749,7 +756,8 @@ async function main(): Promise<void> {
     .option('--budget <tokens>', 'Total token budget', '50000')
     .option('--web-search', 'Enable web search for solutions', true)
     .option('--no-web-search', 'Disable web search for solutions')
-    .action(async (description: string, options: { repo: string; file: string[]; autoPush: boolean; llm?: string; budget: string; webSearch: boolean }) => {
+    .option('--create-pr', 'Open a pull request after pushing (uses gh CLI, falls back to a compare URL)', false)
+    .action(async (description: string, options: { repo: string; file: string[]; autoPush: boolean; llm?: string; budget: string; webSearch: boolean; createPr: boolean }) => {
       const fixStart = Date.now();
       try {
         const llmService = options.llm;
@@ -758,6 +766,7 @@ async function main(): Promise<void> {
           verbose: true,
           llmService,
           webSearch: options.webSearch,
+          git: options.createPr ? { push: { remote: 'origin', force: false, createPR: true } } : undefined,
           tokenBudget: {
             total,
             analysis: Math.floor(total * 0.4),

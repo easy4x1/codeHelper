@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { GitExecutor, DEFAULT_GIT_CONFIG } from '../src/core/git-executor.js';
+import {
+  GitExecutor,
+  DEFAULT_GIT_CONFIG,
+  parseRemoteUrl,
+  buildCompareUrl,
+} from '../src/core/git-executor.js';
 
 describe('GitExecutor config', () => {
   it('has sensible defaults', () => {
@@ -46,5 +51,68 @@ describe('GitExecutionResult type', () => {
     expect(result.success).toBe(true);
     expect(result.pushed).toBe(true);
     expect(result.errors).toEqual([]);
+  });
+});
+
+describe('parseRemoteUrl', () => {
+  it('parses SSH GitHub remotes', () => {
+    expect(parseRemoteUrl('git@github.com:owner/repo.git')).toEqual({
+      host: 'github.com',
+      owner: 'owner',
+      repo: 'repo',
+    });
+  });
+
+  it('parses HTTPS GitHub remotes', () => {
+    expect(parseRemoteUrl('https://github.com/owner/repo.git')).toEqual({
+      host: 'github.com',
+      owner: 'owner',
+      repo: 'repo',
+    });
+  });
+
+  it('parses HTTPS remotes without .git suffix', () => {
+    expect(parseRemoteUrl('https://github.com/owner/repo')).toEqual({
+      host: 'github.com',
+      owner: 'owner',
+      repo: 'repo',
+    });
+  });
+
+  it('parses self-hosted GitLab SSH remotes', () => {
+    expect(parseRemoteUrl('git@gitlab.example.com:group/proj.git')).toEqual({
+      host: 'gitlab.example.com',
+      owner: 'group',
+      repo: 'proj',
+    });
+  });
+
+  it('returns null for unrecognized remotes', () => {
+    expect(parseRemoteUrl('')).toBeNull();
+    expect(parseRemoteUrl('not-a-url')).toBeNull();
+  });
+});
+
+describe('buildCompareUrl', () => {
+  it('builds a GitHub compare URL from an SSH remote', () => {
+    expect(
+      buildCompareUrl('git@github.com:owner/repo.git', 'main', 'fix/bug-123')
+    ).toBe('https://github.com/owner/repo/compare/main...fix/bug-123?expand=1');
+  });
+
+  it('builds a GitHub compare URL from an HTTPS remote', () => {
+    expect(
+      buildCompareUrl('https://github.com/owner/repo', 'develop', 'feature/x')
+    ).toBe('https://github.com/owner/repo/compare/develop...feature/x?expand=1');
+  });
+
+  it('returns null when the remote cannot be parsed', () => {
+    expect(buildCompareUrl('garbage', 'main', 'fix/x')).toBeNull();
+  });
+});
+
+describe('GitExecutor PR config', () => {
+  it('defaults createPR to false', () => {
+    expect(DEFAULT_GIT_CONFIG.push.createPR).toBe(false);
   });
 });
