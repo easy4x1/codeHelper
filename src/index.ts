@@ -8,7 +8,7 @@ import { FaultDetectorAgent } from './agents/fault-detector-agent.js';
 import { ContextBuilderAgent } from './agents/context-builder-agent.js';
 import { SolutionPlannerAgent } from './agents/solution-planner-agent.js';
 import { WebSearcherAgent } from './agents/web-searcher-agent.js';
-import { KnowledgeGraphBuilder } from './core/knowledge-graph.js';
+import { buildGraphFromFingerprints } from './core/graph-build.js';
 import { writeFile, readFile, access, mkdir, stat } from 'fs/promises';
 import { join, resolve, dirname } from 'path';
 import { pathToFileURL } from 'url';
@@ -151,24 +151,10 @@ export class CodeRepairAgent {
       context: { repoPath: resolve(repoPath) },
     });
 
-    // Build a basic knowledge graph from fingerprints
-    const builder = new KnowledgeGraphBuilder();
+    // Build the knowledge graph from fingerprints (contains/imports/exports +
+    // cross-file calls/inherits + symbol-level import resolution).
     const fingerprints = this.memory.getAllFingerprints();
-    for (const [path, fp] of Object.entries(fingerprints)) {
-      builder.addNode({ id: `file:${path}`, type: 'file', name: path.split('/').pop() || path, filePath: path });
-      for (const fn of fp.functions) {
-        builder.addNode({ id: `function:${path}:${fn.name}`, type: 'function', name: fn.name, filePath: path });
-        builder.addEdge(`file:${path}`, `function:${path}:${fn.name}`, 'contains', 1.0);
-      }
-      for (const cls of fp.classes) {
-        builder.addNode({ id: `class:${path}:${cls.name}`, type: 'class', name: cls.name, filePath: path });
-        builder.addEdge(`file:${path}`, `class:${path}:${cls.name}`, 'contains', 1.0);
-      }
-      for (const imp of fp.imports) {
-        builder.addEdge(`file:${path}`, `module:${imp.source}`, 'imports', 0.7);
-      }
-    }
-    this.memory.setKnowledgeGraph(builder.build());
+    this.memory.setKnowledgeGraph(buildGraphFromFingerprints(fingerprints));
 
     const files = result.result.files as string[];
 
@@ -225,14 +211,20 @@ export class CodeRepairAgent {
     const analysisTokens = TokenBudgetManager.estimateTokens(JSON.stringify(detectorResult.findings));
     this.budgetManager.recordUsage('analysis', analysisTokens);
 
+    let propagationResult: Record<string, unknown> | undefined;
     if (findings.length > 0) {
       const nodeIds = findings.flatMap(f => f.nodeIds);
       const builder = new ContextBuilderAgent(this.memory);
-      await builder.run({
+      const contextOutput = await builder.run({
         taskId: task.id,
         instruction: 'Build context for findings',
-        context: { nodeIds },
+        context: {
+          nodeIds,
+          // Couple propagation depth to the token budget's degradation policy.
+          maxPropagationDepth: recommendations.adjustments.maxPropagationDepth,
+        },
       });
+      propagationResult = contextOutput.result.propagationResult as Record<string, unknown> | undefined;
     }
 
     // ---- Web Search (Phase 3) ----
@@ -277,6 +269,8 @@ export class CodeRepairAgent {
           snippet: r.snippet,
           credibility: r.credibilityScore,
         })),
+        // Feed graph propagation (affected nodes + root-cause candidates) into analysis.
+        propagationResult,
       },
     });
 

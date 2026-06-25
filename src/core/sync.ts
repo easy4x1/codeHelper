@@ -1,6 +1,7 @@
 import { scanRepo } from './repo-scanner.js';
-import { computeFingerprint, classifyChange } from './fingerprint.js';
-import { KnowledgeGraphBuilder, mergeGraphs } from './knowledge-graph.js';
+import { classifyChange } from './fingerprint.js';
+import { KnowledgeGraphBuilder } from './knowledge-graph.js';
+import { addFileToGraph } from './graph-build.js';
 import type {
   FileFingerprint,
   KnowledgeGraph,
@@ -64,6 +65,10 @@ export async function syncRepo(
   const builder = KnowledgeGraphBuilder.fromGraph(existingGraph);
   const updatedFingerprints: Record<string, FileFingerprint> = {};
 
+  // Full current-repo view, used to resolve cross-file calls/inherits/imports
+  // when rebuilding any single file's nodes.
+  const allFingerprints: Record<string, FileFingerprint> = Object.fromEntries(currentFingerprints);
+
   let filesUnchanged = 0;
   let filesCosmetic = 0;
   let filesStructural = 0;
@@ -78,7 +83,7 @@ export async function syncRepo(
       // Force full re-analysis
       filesStructural++;
       updatedFingerprints[filePath] = newFp;
-      rebuildGraphForFile(builder, filePath, newFp);
+      rebuildGraphForFile(builder, filePath, newFp, allFingerprints);
       changes.push({
         filePath,
         changeLevel: 'STRUCTURAL',
@@ -91,7 +96,7 @@ export async function syncRepo(
       // New file
       filesAdded++;
       updatedFingerprints[filePath] = newFp;
-      rebuildGraphForFile(builder, filePath, newFp);
+      rebuildGraphForFile(builder, filePath, newFp, allFingerprints);
       changes.push({
         filePath,
         changeLevel: 'STRUCTURAL',
@@ -124,7 +129,7 @@ export async function syncRepo(
         filesStructural++;
         // Structure changed — rebuild graph nodes for this file
         updatedFingerprints[filePath] = newFp;
-        rebuildGraphForFile(builder, filePath, newFp);
+        rebuildGraphForFile(builder, filePath, newFp, allFingerprints);
         break;
     }
   }
@@ -165,65 +170,18 @@ export async function syncRepo(
 
 /**
  * Rebuild graph nodes for a single file.
- * Removes old nodes for this file, then adds new ones.
+ * Removes old nodes for this file, then re-adds them via the shared builder
+ * (contains/imports/exports + cross-file calls/inherits/symbol resolution).
  */
 function rebuildGraphForFile(
   builder: KnowledgeGraphBuilder,
   filePath: string,
-  fp: FileFingerprint
+  fp: FileFingerprint,
+  allFingerprints: Record<string, FileFingerprint>
 ): void {
   // Remove old nodes for this file first
   removeFileFromGraph(builder, filePath);
-
-  // Add file node
-  builder.addNode({
-    id: `file:${filePath}`,
-    type: 'file',
-    name: filePath.split('/').pop() || filePath,
-    filePath,
-  });
-
-  // Add function nodes
-  for (const fn of fp.functions) {
-    const nodeId = `function:${filePath}:${fn.name}`;
-    builder.addNode({
-      id: nodeId,
-      type: 'function',
-      name: fn.name,
-      filePath,
-      metadata: { isExported: fn.isExported, returnType: fn.returnType },
-    });
-    builder.addEdge(`file:${filePath}`, nodeId, 'contains', 1.0);
-  }
-
-  // Add class nodes
-  for (const cls of fp.classes) {
-    const nodeId = `class:${filePath}:${cls.name}`;
-    builder.addNode({
-      id: nodeId,
-      type: 'class',
-      name: cls.name,
-      filePath,
-      metadata: { isExported: cls.isExported, methods: cls.methods, properties: cls.properties },
-    });
-    builder.addEdge(`file:${filePath}`, nodeId, 'contains', 1.0);
-  }
-
-  // Add import edges
-  for (const imp of fp.imports) {
-    builder.addEdge(`file:${filePath}`, `module:${imp.source}`, 'imports', 0.7);
-  }
-
-  // Add export edges (file exports a symbol)
-  for (const exp of fp.exports) {
-    const targetId =
-      exp.type === 'function'
-        ? `function:${filePath}:${exp.name}`
-        : exp.type === 'class'
-          ? `class:${filePath}:${exp.name}`
-          : `file:${filePath}`;
-    builder.addEdge(`file:${filePath}`, targetId, 'exports', 0.8);
-  }
+  addFileToGraph(builder, filePath, fp, allFingerprints, new Set(Object.keys(allFingerprints)));
 }
 
 /**

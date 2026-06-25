@@ -10,13 +10,13 @@ export class ContextBuilderAgent extends BaseAgent {
   }
 
   protected async execute(input: AgentInput): Promise<Record<string, unknown>> {
-    const { nodeIds } = parseContext(input.context, contextBuilderContextSchema);
+    const { nodeIds, maxPropagationDepth } = parseContext(input.context, contextBuilderContextSchema);
     const graph = this.memory.getKnowledgeGraph();
 
     const builder = KnowledgeGraphBuilder.fromGraph(graph);
     const engine = new PropagationEngine(builder);
 
-    const maxDepth = (input.context.maxPropagationDepth as number | undefined) ?? 3;
+    const maxDepth = maxPropagationDepth ?? 3;
 
     const traceResult = engine.trace(nodeIds, {
       direction: 'both',
@@ -52,6 +52,11 @@ export class ContextBuilderAgent extends BaseAgent {
         entryPoints: traceResult.entryPoints.length,
         affectedNodes: traceResult.affectedNodes.length,
         maxImpactProbability,
+      },
+      // Full propagation detail for downstream root-cause analysis.
+      propagationResult: {
+        affectedNodes: traceResult.affectedNodes,
+        rootCauseCandidates: traceResult.rootCauseCandidates,
       },
     };
   }

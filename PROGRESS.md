@@ -307,7 +307,9 @@
 | **`tests/git-executor.test.ts`** | **4** | **GitExecutor 配置 + 安全策略** |
 | **`tests/root-cause-analyzer-agent.test.ts`** | **4** | **RootCauseAnalyzerAgent 根因分析** |
 | **`tests/repair-orchestration.test.ts`** | **7** | **applyPlan/apply/repair 统一编排（review 闸门 + dry-run + 学习记录）** |
-| **总计** | **228** | **30 个测试文件** |
+| **`tests/graph-build.test.ts`** | **6** | **图谱构建：跨文件 calls/inherits 边 + 符号级 import 解析 + 外部 module 节点** |
+| **`tests/context-builder-agent.test.ts`** | **3** | **ContextBuilder 返回 propagationResult + maxPropagationDepth 联动（含 0 深度降级）** |
+| **总计** | **241** | **32 个测试文件** |
 
 ---
 
@@ -393,6 +395,11 @@
 48. **LLM 补丁生成接通** — `applyPlan` 向 `PatchGeneratorAgent` 注入 `llmService`，方案缺代码时可调用 LLM 生成 diff（原先不可达）
 49. **主语言自动探测** — `detectPrimaryLanguage()` 从指纹/目标文件扩展名推断，替换 web search 写死的 `language: 'typescript'`
 50. **metrics 定时器 `unref()`** — 修复所有成功 CLI 命令结束后进程悬挂的预存 bug；`fix` 与 `apply` 的 git 失败退出码统一
+51. **跨文件 `calls`/`inherits` 边构建** — 新增共享 `src/core/graph-build.ts`：指纹提取函数调用点（`FunctionSignature.calls`）与父类（`ClassSignature.superClass`），构建 function→function 调用边和 class→superclass 继承边（同文件 + 经相对 import 跨文件解析）；`init` 与 `sync` 统一走该模块，传播引擎已有规则现可实际触达跨文件调用链
+52. **符号级 import 解析** — 相对 import 解析到具体导出符号节点（`function:file:foo` / `class:file:Bar`）而非粗粒度 `module:` 节点；外部包仍保留 `module:` 节点（此前为悬空边，现为真实节点可参与传播）
+53. **`propagationResult` 接入根因分析** — `ContextBuilderAgent` 返回完整 `propagationResult`（affectedNodes + rootCauseCandidates），`plan()` 捕获并传给 `RootCauseAnalyzerAgent`（此前丢弃，根因传播洞察恒为空）
+54. **预算降级 → 传播深度联动** — `plan()` 将 `TokenBudget` 的 `maxPropagationDepth` 注入 `ContextBuilder`（经 schema 校验，支持 0 深度=不传播），不再写死默认 3
+55. **修复 import 提取预存 bug** — `import_clause` 是子节点而非命名字段，`childForFieldName` 恒返回 null 导致 named/default import 的 `items` 始终为空（此前无测试覆盖）；改为按子节点类型查找，default import 取 `.text` 而非节点对象。此 bug 此前使 #51/#52 的跨文件解析在运行时失效
 
 ### 6.2 剩余重要工作（按优先级）
 
@@ -521,7 +528,7 @@ src/
     ├── logger.ts                  36 行  (日志)
     └── hash.ts                     5 行  (哈希)
 
-总计: ~5,900 行代码 + **228** 个测试（**30** 个测试文件）
+总计: ~6,100 行代码 + **241** 个测试（**32** 个测试文件）
 ```
 
 ---
