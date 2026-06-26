@@ -11,6 +11,8 @@ export interface ScanResult {
   skippedFiles: string[];
   /** Non-source files (config/document/pipeline/service/schema) for graph enrichment. */
   assetFiles: string[];
+  /** Raw content for B-layer enrichment: source files + schema asset files (.prisma/.sql). */
+  sources: Record<string, string>;
 }
 
 const SOURCE_EXTENSIONS = new Set([
@@ -40,10 +42,12 @@ export async function scanRepo(repoPath: string): Promise<ScanResult> {
   await walkDir(repoPath, repoPath, files, languages, skippedFiles, assetFiles);
 
   const fingerprints: FileFingerprint[] = [];
+  const sources: Record<string, string> = {};
   await Promise.all(
     files.map(async (file) => {
       try {
         const content = await readFile(file.absolutePath, 'utf-8');
+        sources[file.filePath] = content;
         const fp = computeFingerprint(file.filePath, content);
         fingerprints.push(fp);
       } catch {
@@ -52,7 +56,23 @@ export async function scanRepo(repoPath: string): Promise<ScanResult> {
     })
   );
 
-  return { files, fingerprints, languages, skippedFiles, assetFiles };
+  // Retain content of schema asset files (.prisma/.sql) for table extraction.
+  await Promise.all(
+    assetFiles
+      .filter((p) => {
+        const lower = p.toLowerCase();
+        return lower.endsWith('.prisma') || lower.endsWith('.sql');
+      })
+      .map(async (filePath) => {
+        try {
+          sources[filePath] = await readFile(join(repoPath, filePath), 'utf-8');
+        } catch {
+          /* unreadable schema file — skip */
+        }
+      })
+  );
+
+  return { files, fingerprints, languages, skippedFiles, assetFiles, sources };
 }
 
 async function walkDir(

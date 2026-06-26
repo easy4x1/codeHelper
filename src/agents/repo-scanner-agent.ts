@@ -33,6 +33,7 @@ export class RepoScannerAgent extends BaseAgent {
       languages: Array.from(result.languages),
       importMap,
       assetFiles: result.assetFiles,
+      sources: result.sources,
     };
   }
 }

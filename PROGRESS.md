@@ -312,7 +312,8 @@
 | **`tests/graph-build.test.ts`** | **6** | **图谱构建：跨文件 calls/inherits 边 + 符号级 import 解析 + 外部 module 节点** |
 | **`tests/context-builder-agent.test.ts`** | **3** | **ContextBuilder 返回 propagationResult + maxPropagationDepth 联动（含 0 深度降级）** |
 | **`tests/graph-enrich.test.ts`** | **10** | **GraphEnricher A 层：层级闸门 + implements/tested_by/depends_on 边 + 文件分类器节点** |
-| **总计** | **270** | **33 个测试文件** |
+| **`tests/graph-enrich-b.test.ts`** | **12** | **GraphEnricher B 层：routes/events/middleware/data-access/tables + 保守模式负例** |
+| **总计** | **283** | **34 个测试文件** |
 
 ---
 
@@ -405,6 +406,7 @@
 55. **修复 import 提取预存 bug** — `import_clause` 是子节点而非命名字段，`childForFieldName` 恒返回 null 导致 named/default import 的 `items` 始终为空（此前无测试覆盖）；改为按子节点类型查找，default import 取 `.text` 而非节点对象。此 bug 此前使 #51/#52 的跨文件解析在运行时失效
 56. **PR 自动创建** — `GitExecutor.createPullRequest`：优先 `gh pr create`（带 title/body/base/head），`gh` 不可用或失败时降级为手动 compare URL；新增纯函数 `parseRemoteUrl`（SSH/HTTPS/自托管）+ `buildCompareUrl`，`execute()` 在 push 后按 `push.createPR` 触发（protected 分支自动跳过）；`prUrl` 经 GitExecutorAgent → `RepairOutcome.git` 贯通至 CLI 输出；`code-agent fix --create-pr` 标志接入。关闭 Phase 4 最后实质缺口
 57. **知识图谱 A 层语义增强（GraphEnricher 管线）** — 新增 `src/core/graph-enrich.ts`：可插拔、按层（A/B/C/D）开关的 `GraphEnricher` 管线，挂在 `buildGraphFromFingerprints` 确定性内核之后（`init` 与 `sync` 统一接入，单一真相源）。落地全部 A 层（零 token 静态）：① `implements` 边——指纹新增 `ClassSignature.implements`（Tree-sitter 提取 `implements` 子句），enricher 按 inherits 同构解析（同文件 + 跨 import）；② `tested_by` 边——测试文件命名/路径识别 + 相对 import 解析到源文件；③ `depends_on` 边——文件级 import 聚合（相对→file、外部→module）；④ 文件分类器节点——`config`/`document`/`pipeline`/`service`/`schema`，扫描器新增 `assetFiles` 采集非源文件（`.repair-agent` 加入忽略目录）。真实仓库 `init` 端到端验证：6 类新节点/边全部正确构建。详见 `docs/GRAPH-ENRICHMENT-PLAN.md`
+58. **知识图谱 B 层语义增强（框架感知静态，零 token）** — 完整落地 B 层全部 4 类模式提取(`graph-enrich.ts` 新增 5 个 enricher)。因指纹只记 callee 名不含参数,B 层经 `EnrichContext.sources` 读源码做保守模式匹配;扫描器新增 `sources` 采集(源文件 + `.prisma`/`.sql` schema 文件内容)。① `endpoint` 节点 + `routes` 边——调用式(`app.get('/path')`,路径须以 `/` 开头以排除 `map.get('key')`)+ 装饰器式(`@Get('/path')`);② `subscribes`/`publishes` 边——`.on/.emit` 等带字符串事件名,连到共享 `concept:event:<name>` 节点;③ `middleware` 边——`app/router/server/api.use(ident)` 且实参为可解析到函数节点的裸标识符(排除 `React.use`/内联调用);④ `reads_from`/`writes_to` 边——`fs.*` 读写 + `*.query(` 连到 `resource:filesystem`/`resource:database`;⑤ `table` 节点 + `defines_schema` 边——Prisma `model` 块 + SQL `CREATE TABLE`,连到 A 层 `schema:` 节点。`init`/`sync` 启用 `['A','B']`。真实仓库端到端验证:7 类新边 + endpoint/table/resource/concept 节点全部正确构建,B 接 A 的 schema 节点无悬空
 
 ### 6.2 剩余重要工作（按优先级）
 

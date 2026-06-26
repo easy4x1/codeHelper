@@ -38,4 +38,11 @@ describe('repo-scanner', () => {
     // source files are not asset files
     expect(result.assetFiles).not.toContain('src/index.ts');
   });
+
+  it('collects raw source content for B-layer enrichment', async () => {
+    const result = await scanRepo(fixturePath);
+    expect(result.sources['src/index.ts']).toContain('function');
+    // non-schema asset files (package.json) are not retained as sources
+    expect(result.sources['package.json']).toBeUndefined();
+  });
 });

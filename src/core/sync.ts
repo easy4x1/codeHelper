@@ -2,7 +2,7 @@ import { scanRepo } from './repo-scanner.js';
 import { classifyChange } from './fingerprint.js';
 import { KnowledgeGraphBuilder } from './knowledge-graph.js';
 import { addFileToGraph } from './graph-build.js';
-import { runEnrichers, A_LAYER_ENRICHERS } from './graph-enrich.js';
+import { runEnrichers, A_LAYER_ENRICHERS, B_LAYER_ENRICHERS } from './graph-enrich.js';
 import type {
   FileFingerprint,
   KnowledgeGraph,
@@ -149,15 +149,16 @@ export async function syncRepo(
     }
   }
 
-  // 4. Re-run the A-layer enrichers graph-wide. They are zero-token static
-  // passes; rebuilt files already had their enricher edges cleared with their
-  // nodes, and addNode/addEdge dedupe, so this restores cross-file enrichment
-  // (implements/tested_by/depends_on + asset classifier) without drift.
+  // 4. Re-run the enrichers graph-wide. They are zero-token static passes;
+  // rebuilt files already had their enricher edges cleared with their nodes,
+  // and addNode/addEdge dedupe, so this restores cross-file A-layer enrichment
+  // (implements/tested_by/depends_on + asset classifier) and B-layer framework
+  // patterns (routes/events/middleware/data-access/tables) without drift.
   await runEnrichers(
     builder,
     allFingerprints,
-    { enabledLayers: ['A'], assetFiles: scanResult.assetFiles },
-    A_LAYER_ENRICHERS
+    { enabledLayers: ['A', 'B'], assetFiles: scanResult.assetFiles, sources: scanResult.sources },
+    [...A_LAYER_ENRICHERS, ...B_LAYER_ENRICHERS]
   );
 
   const result: SyncResult = {
