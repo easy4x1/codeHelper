@@ -9,9 +9,10 @@ import { ContextBuilderAgent } from './agents/context-builder-agent.js';
 import { SolutionPlannerAgent } from './agents/solution-planner-agent.js';
 import { WebSearcherAgent } from './agents/web-searcher-agent.js';
 import { buildGraphBuilderFromFingerprints } from './core/graph-build.js';
-import { runEnrichers, A_LAYER_ENRICHERS, B_LAYER_ENRICHERS, C_LAYER_ENRICHERS } from './core/graph-enrich.js';
+import { runEnrichers, A_LAYER_ENRICHERS, B_LAYER_ENRICHERS, C_LAYER_ENRICHERS, D_LAYER_ENRICHERS } from './core/graph-enrich.js';
 import { KnowledgeGraphBuilder } from './core/knowledge-graph.js';
 import { recordFindingsAsFaults, recordPlanAsFixes } from './core/graph-writer.js';
+import { LlmSemanticCache } from './core/llm-semantic-cache.js';
 import { writeFile, readFile, access, mkdir, stat } from 'fs/promises';
 import { join, resolve, dirname } from 'path';
 import { pathToFileURL } from 'url';
@@ -67,6 +68,8 @@ export interface AgentConfig {
   embeddings?: string;
   /** Git execution configuration */
   git?: Partial<GitExecutionConfig>;
+  /** Enable D-layer LLM semantic enrichment (default: false) */
+  semanticEnrichment?: boolean;
 }
 
 export class CodeRepairAgent {
@@ -128,6 +131,10 @@ export class CodeRepairAgent {
 
   getMetrics(): MetricsCollector {
     return this.metrics;
+  }
+
+  getLlmService(): LlmService {
+    return this.llmService;
   }
 
   /**
@@ -202,18 +209,31 @@ export class CodeRepairAgent {
     const assetFiles = (result.result.assetFiles as string[]) ?? [];
     const sources = (result.result.sources as Record<string, string>) ?? {};
     const emb = this.makeEmbeddings();
+    const llmCache = this.config.semanticEnrichment
+      ? new LlmSemanticCache(this.memory.getLlmSemanticCache())
+      : undefined;
+
+    const enabledLayers: Array<'A' | 'B' | 'C' | 'D'> = ['A', 'B'];
+    if (emb) enabledLayers.push('C');
+    if (this.config.semanticEnrichment) enabledLayers.push('D');
+
     await runEnrichers(
       builder,
       fingerprints,
       {
-        enabledLayers: emb ? ['A', 'B', 'C'] : ['A', 'B'],
+        enabledLayers,
         assetFiles,
         sources,
         embeddings: emb?.service,
+        llm: this.config.semanticEnrichment ? this.llmService : undefined,
+        llmCache,
       },
-      emb ? [...A_LAYER_ENRICHERS, ...B_LAYER_ENRICHERS, ...C_LAYER_ENRICHERS] : [...A_LAYER_ENRICHERS, ...B_LAYER_ENRICHERS]
+      [...A_LAYER_ENRICHERS, ...B_LAYER_ENRICHERS, ...C_LAYER_ENRICHERS, ...D_LAYER_ENRICHERS]
     );
     emb?.persist();
+    if (llmCache) {
+      this.memory.setLlmSemanticCache(llmCache.export());
+    }
     this.memory.setKnowledgeGraph(builder.build());
 
     const files = result.result.files as string[];
@@ -396,6 +416,8 @@ export class CodeRepairAgent {
     this.memory.setSemanticCache(this.semanticCache.export());
     // Persist result cache so unchanged-file analysis reuse survives across runs
     this.memory.setResultCache(this.resultCache.export());
+    // Persist D-layer LLM semantic cache so summaries/tags/layers survive across runs
+    this.memory.setLlmSemanticCache(this.memory.getLlmSemanticCache());
     const serialized = this.memory.serialize();
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, serialized, 'utf-8');
@@ -414,6 +436,7 @@ export class CodeRepairAgent {
       this.semanticCache.load(this.memory.getSemanticCache());
       // Hydrate result cache from persisted entries
       this.resultCache.load(this.memory.getResultCache());
+      // D-layer LLM semantic cache is kept inside MemoryMiddleware and passed to enrichers directly
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') {
@@ -604,9 +627,10 @@ async function main(): Promise<void> {
     .description('Initialize agent for a repository')
     .argument('[repo-path]', 'Path to repository', '.')
     .option('--embeddings [provider]', 'Enable C-layer embedding enrichment (similar_to/related edges + concept clusters). Optional provider: template (default) | local')
-    .action(async (repoPath: string, options: { embeddings?: string | boolean }) => {
+    .option('--semantic', 'Enable D-layer LLM semantic enrichment (summaries, concept naming, architecture layers, semantic edges)', false)
+    .action(async (repoPath: string, options: { embeddings?: string | boolean; semantic?: boolean }) => {
       try {
-        const agent = new CodeRepairAgent({ verbose: true, embeddings: normalizeEmbeddings(options.embeddings) });
+        const agent = new CodeRepairAgent({ verbose: true, embeddings: normalizeEmbeddings(options.embeddings), semanticEnrichment: options.semantic });
         const result = await agent.init(repoPath);
         await agent.saveMemory(join(resolve(repoPath), '.repair-agent', 'memory.json'));
         console.log(`Initialized: ${result.fingerprintCount} files scanned`);
@@ -717,20 +741,28 @@ async function main(): Promise<void> {
     .argument('[repo-path]', 'Path to repository', '.')
     .option('--force-full', 'Force full re-analysis of all files', false)
     .option('--embeddings [provider]', 'Enable C-layer embedding enrichment (similar_to/related edges + concept clusters). Optional provider: template (default) | local')
-    .action(async (repoPath: string, options: { forceFull: boolean; embeddings?: string | boolean }) => {
+    .option('--semantic', 'Enable D-layer LLM semantic enrichment', false)
+    .action(async (repoPath: string, options: { forceFull: boolean; embeddings?: string | boolean; semantic?: boolean }) => {
       try {
-        const agent = new CodeRepairAgent({ verbose: true, embeddings: normalizeEmbeddings(options.embeddings) });
+        const agent = new CodeRepairAgent({ verbose: true, embeddings: normalizeEmbeddings(options.embeddings), semanticEnrichment: options.semantic });
         const memoryPath = join(resolve(repoPath), '.repair-agent', 'memory.json');
         await agent.loadMemory(memoryPath);
 
         const emb = agent.makeEmbeddings();
+        const llmCache = options.semantic ? new LlmSemanticCache(agent.getMemory().getLlmSemanticCache()) : undefined;
         const syncStart = Date.now();
         const result = await syncRepo(agent.getMemory(), {
           repoPath: resolve(repoPath),
           forceFull: options.forceFull,
           embeddings: emb?.service,
+          semantic: options.semantic,
+          llm: options.semantic ? agent.getLlmService() : undefined,
+          llmCache,
         });
         emb?.persist();
+        if (llmCache) {
+          agent.getMemory().setLlmSemanticCache(llmCache.export());
+        }
 
         // Update memory with sync results
         const memory = agent.getMemory();

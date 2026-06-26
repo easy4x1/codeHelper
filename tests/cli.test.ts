@@ -64,6 +64,16 @@ describe('CodeRepairAgent', () => {
     const fingerprints = agent2.getMemory().getAllFingerprints();
     expect(Object.keys(fingerprints).length).toBeGreaterThan(0);
   });
+  it('enables D-layer semantic enrichment with semanticEnrichment config', async () => {
+    const agent = new CodeRepairAgent({ provider: 'template', semanticEnrichment: true });
+    await agent.init(fixturePath);
+
+    const graph = agent.getMemory().getKnowledgeGraph();
+    const fileNode = graph.nodes.find(n => n.type === 'file');
+    expect(fileNode?.summary).toBeTruthy();
+    expect(fileNode?.tags?.some(t => t.startsWith('layer:'))).toBe(true);
+    expect(graph.nodes.some(n => n.type === 'concept' && n.id.startsWith('concept:layer:'))).toBe(true);
+  });
 });
 
 describe('CodeRepairAgent apply', () => {

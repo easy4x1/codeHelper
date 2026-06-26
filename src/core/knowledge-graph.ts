@@ -76,6 +76,19 @@ export class KnowledgeGraphBuilder {
     return this.nodes.delete(id);
   }
 
+  /**
+   * Update mutable properties of an existing node.
+   * Used by D-layer enrichers to write summaries, tags, and names.
+   */
+  updateNode(id: string, updates: Partial<Omit<GraphNode, 'id'>>): boolean {
+    const node = this.nodes.get(id);
+    if (!node) {
+      return false;
+    }
+    Object.assign(node, updates);
+    return true;
+  }
+
   removeEdge(id: string): boolean {
     const edge = this.edges.get(id);
     if (!edge) {

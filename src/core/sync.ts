@@ -2,7 +2,7 @@ import { scanRepo } from './repo-scanner.js';
 import { classifyChange } from './fingerprint.js';
 import { KnowledgeGraphBuilder } from './knowledge-graph.js';
 import { addFileToGraph } from './graph-build.js';
-import { runEnrichers, A_LAYER_ENRICHERS, B_LAYER_ENRICHERS, C_LAYER_ENRICHERS } from './graph-enrich.js';
+import { runEnrichers, A_LAYER_ENRICHERS, B_LAYER_ENRICHERS, C_LAYER_ENRICHERS, D_LAYER_ENRICHERS } from './graph-enrich.js';
 import type {
   FileFingerprint,
   KnowledgeGraph,
@@ -10,6 +10,8 @@ import type {
   ChangeLevel,
 } from './types.js';
 import type { EmbeddingService } from './embedding-service.js';
+import type { LlmService } from './llm-service.js';
+import { LlmSemanticCache } from './llm-semantic-cache.js';
 import { MemoryMiddleware } from './memory.js';
 import { readFile } from 'fs/promises';
 import { createLogger } from '../utils/logger.js';
@@ -25,6 +27,15 @@ export interface SyncOptions {
    * absent, only A/B run (C self-skips). Persisting the cache is the caller's job.
    */
   embeddings?: EmbeddingService;
+  /**
+   * Enable D-layer LLM semantic enrichment (summaries, concept naming,
+   * architecture layers, semantic edges). Requires `llm`.
+   */
+  semantic?: boolean;
+  /** D-layer dependency; required when `semantic` is true. */
+  llm?: LlmService;
+  /** D-layer result cache; optional but strongly recommended. */
+  llmCache?: LlmSemanticCache;
 }
 
 export interface SyncResult {
@@ -163,18 +174,22 @@ export async function syncRepo(
   // patterns (routes/events/middleware/data-access/tables) without drift. C-layer
   // embedding enrichment (similar_to/related + concept clusters) runs only when an
   // embedding service is provided; its cache makes unchanged node texts free.
+  const enabledLayers: Array<'A' | 'B' | 'C' | 'D'> = ['A', 'B'];
+  if (options.embeddings) enabledLayers.push('C');
+  if (options.semantic) enabledLayers.push('D');
+
   await runEnrichers(
     builder,
     allFingerprints,
     {
-      enabledLayers: options.embeddings ? ['A', 'B', 'C'] : ['A', 'B'],
+      enabledLayers,
       assetFiles: scanResult.assetFiles,
       sources: scanResult.sources,
       embeddings: options.embeddings,
+      llm: options.semantic ? options.llm : undefined,
+      llmCache: options.semantic ? options.llmCache : undefined,
     },
-    options.embeddings
-      ? [...A_LAYER_ENRICHERS, ...B_LAYER_ENRICHERS, ...C_LAYER_ENRICHERS]
-      : [...A_LAYER_ENRICHERS, ...B_LAYER_ENRICHERS]
+    [...A_LAYER_ENRICHERS, ...B_LAYER_ENRICHERS, ...C_LAYER_ENRICHERS, ...D_LAYER_ENRICHERS]
   );
 
   const result: SyncResult = {
