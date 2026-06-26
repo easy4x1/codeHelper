@@ -313,7 +313,9 @@
 | **`tests/context-builder-agent.test.ts`** | **3** | **ContextBuilder 返回 propagationResult + maxPropagationDepth 联动（含 0 深度降级）** |
 | **`tests/graph-enrich.test.ts`** | **10** | **GraphEnricher A 层：层级闸门 + implements/tested_by/depends_on 边 + 文件分类器节点** |
 | **`tests/graph-enrich-b.test.ts`** | **12** | **GraphEnricher B 层：routes/events/middleware/data-access/tables + 保守模式负例** |
-| **总计** | **283** | **34 个测试文件** |
+| **`tests/graph-enrich-c.test.ts`** | **12** | **GraphEnricher C 层：similar_to/related 阈值分带 + top-K 剪枝 + 跨类型匿名聚类 + 确定性 id** |
+| **`tests/embedding-service.test.ts`** | **32** | **EmbeddingService 桩 + cosine + config 解析 + EmbeddingCache(LRU/持久化) + CachedEmbeddingService(仅 miss 触底) + LocalEmbeddingService 构造 + 真实 ONNX 模型 DoD eval(模型存在时启用,缺失则跳过)** |
+| **总计** | **328** | **36 个测试文件**（含 2 个真实 ONNX 模型 DoD 用例，模型缺失时自动跳过；Tavily 网络用例偶发超时与本层无关） |
 
 ---
 
@@ -407,6 +409,9 @@
 56. **PR 自动创建** — `GitExecutor.createPullRequest`：优先 `gh pr create`（带 title/body/base/head），`gh` 不可用或失败时降级为手动 compare URL；新增纯函数 `parseRemoteUrl`（SSH/HTTPS/自托管）+ `buildCompareUrl`，`execute()` 在 push 后按 `push.createPR` 触发（protected 分支自动跳过）；`prUrl` 经 GitExecutorAgent → `RepairOutcome.git` 贯通至 CLI 输出；`code-agent fix --create-pr` 标志接入。关闭 Phase 4 最后实质缺口
 57. **知识图谱 A 层语义增强（GraphEnricher 管线）** — 新增 `src/core/graph-enrich.ts`：可插拔、按层（A/B/C/D）开关的 `GraphEnricher` 管线，挂在 `buildGraphFromFingerprints` 确定性内核之后（`init` 与 `sync` 统一接入，单一真相源）。落地全部 A 层（零 token 静态）：① `implements` 边——指纹新增 `ClassSignature.implements`（Tree-sitter 提取 `implements` 子句），enricher 按 inherits 同构解析（同文件 + 跨 import）；② `tested_by` 边——测试文件命名/路径识别 + 相对 import 解析到源文件；③ `depends_on` 边——文件级 import 聚合（相对→file、外部→module）；④ 文件分类器节点——`config`/`document`/`pipeline`/`service`/`schema`，扫描器新增 `assetFiles` 采集非源文件（`.repair-agent` 加入忽略目录）。真实仓库 `init` 端到端验证：6 类新节点/边全部正确构建。详见 `docs/GRAPH-ENRICHMENT-PLAN.md`
 58. **知识图谱 B 层语义增强（框架感知静态，零 token）** — 完整落地 B 层全部 4 类模式提取(`graph-enrich.ts` 新增 5 个 enricher)。因指纹只记 callee 名不含参数,B 层经 `EnrichContext.sources` 读源码做保守模式匹配;扫描器新增 `sources` 采集(源文件 + `.prisma`/`.sql` schema 文件内容)。① `endpoint` 节点 + `routes` 边——调用式(`app.get('/path')`,路径须以 `/` 开头以排除 `map.get('key')`)+ 装饰器式(`@Get('/path')`);② `subscribes`/`publishes` 边——`.on/.emit` 等带字符串事件名,连到共享 `concept:event:<name>` 节点;③ `middleware` 边——`app/router/server/api.use(ident)` 且实参为可解析到函数节点的裸标识符(排除 `React.use`/内联调用);④ `reads_from`/`writes_to` 边——`fs.*` 读写 + `*.query(` 连到 `resource:filesystem`/`resource:database`;⑤ `table` 节点 + `defines_schema` 边——Prisma `model` 块 + SQL `CREATE TABLE`,连到 A 层 `schema:` 节点。`init`/`sync` 启用 `['A','B']`。真实仓库端到端验证:7 类新边 + endpoint/table/resource/concept 节点全部正确构建,B 接 A 的 schema 节点无悬空
+59. **知识图谱 C 层语义增强（Embedding 相似度,零 token,桩接通）** — 落地 C 层全部算法 + 缓存 + 接线（详细设计见 `docs/GRAPH-ENRICHMENT-PLAN.md` §7）。**唯一剩余 #5：真实 ONNX 模型 + DoD eval**。① `EmbeddingService` 抽象（`src/core/embedding-service.ts`）镜像 `LlmService`/`LlmConfigResolver` 三 Provider 模式：`TemplateEmbeddingService`（char-trigram 哈希桩,零依赖,确定性,相同文本 cos=1）、`LocalEmbeddingService`（ONNX,默认 `bge-small-en-v1.5`,#5 实装,当前 `createEmbeddingService` 显式 warn 降级桩）、`ApiEmbeddingService`（可选）；`EmbeddingConfigResolver` 分层解析 + 别名。② `embeddingsEnricher`（layer C）：按 §7.2 从指纹构造 function/class/file 节点文本,**同类型内**余弦分带（`≥0.85→similar_to`、`[0.70,0.85)→related`,weight=cos）+ 每节点 top-K=5 + canonical 方向去重；O(n²) 护栏（`>2000→warn+跳过`,no-silent-caps）。③ `clusterEnricher`（layer C）：**跨类型** pool 全部嵌入节点,union-find 连通分量（cos≥0.80,size≥2）产**匿名** `concept:cluster:<sha8>` 节点（命名留 D 层 `rename`,占位名=成员公共 token）+ 成员 `related` 边。④ `EmbeddingCache` + `CachedEmbeddingService` 装饰器：键 = `<model>:<dim>:<textHash>`,LRU + memory.json 持久化（`MemoryMiddleware.get/setEmbeddingCache` + serialize）;按文本哈希键三重收益——消除 #2/#3 重复嵌入（cluster 第二趟零 provider 调用）、sync 未变文件自动命中、模型切换自动失效。⑤ 接线：`init`/`syncRepo` 在 provider 配置时启用 `['A','B','C']` 并注入 cache-backed embeddings + 持久化回写;CLI `init`/`sync` 新增 `--embeddings [provider]`（默认关闭,缺省 provider=template）。真实仓库端到端验证：similar_to/related/concept 节点入图、embeddingCache 持久化到 memory.json、sync 跨进程缓存命中、cluster 第二趟零嵌入全部确认。**⚠️ 桩的"相似度"是词法重叠非语义,DoD 须 #5 真实模型 eval（§7.8）**
+
+60. **知识图谱 C 层收尾（#5 真实 ONNX 模型 + DoD eval,C 层「真完成」）** — 落地 `LocalEmbeddingService`（`src/core/embedding-service.ts`）：经 **`@huggingface/transformers`（optional dep,懒加载）** 跑 ONNX,默认 `bge-small-en-v1.5`（q8 量化,384 维,~34MB）,mean-pool + L2 归一化,与 C 层管线全模型无关对接。① `createEmbeddingService` 的 `local` 分支从「warn 降级桩」改为返回真 `LocalEmbeddingService`（构造零成本,模型懒加载于首次 `embed()`,memoized）;`api` 仍降级桩并 warn（no-silent-caps）。② optional dep + 变量化动态 import（`const TRANSFORMERS_MODULE: string`）——native onnxruntime 装失败不阻断构建/测试,缺包时首次 embed 抛可执行的安装提示。③ 离线/受限网络支持：`EMBEDDING_MODEL_PATH`（本地模型目录)/`HF_ENDPOINT`（镜像主机)/`EMBEDDING_DTYPE` 经 `EmbeddingConfigResolver` 贯通;`scripts/fetch-embedding-model.sh` 默认走 `hf-mirror.com` 预下载到 `./models`（`.gitignore: models/`,不入 git）。④ **DoD eval（§7.8,可复现）**：`scripts/eval-embeddings.mjs` 真实模型 vs 桩 side-by-side——真实模型对**语义相关但词法不同**的签名对正确分带（`authenticate~login` **0.878/similar_to**、`HttpClient~ApiRequester` **0.703/related**、`deleteFile~removeDocument` **0.754/related**),桩全部漏判（0.571/0.349/0.582 → 无边）;无关对两者皆「—」。`tests/embedding-service.test.ts` 新增构造测试 + `describe.skipIf` 守卫的真实模型 DoD 用例（模型存在自动启用,缺失则跳过不静默通过）。⑤ 真实仓库 `init --embeddings local` 端到端：`authenticate→login` 产 `related` 边（w=0.834,桩在同对不产边）、跨类型 `concept:cluster` 成形、embeddingCache 持久化、`sync` 未变文件零嵌入（全缓存命中）。**C 层至此非桩全绿冒充——真实模型语义可用经人验证（详见 `docs/GRAPH-ENRICHMENT-PLAN.md` §7.8/§7.9）。**
 
 ### 6.2 剩余重要工作（按优先级）
 
@@ -496,7 +501,7 @@ Phase 3（团队/高频场景）: 混合策略
 
 ## 7. 文件清单
 
-### 源代码（20 个文件）
+### 源代码（33 个文件）
 
 ```
 src/
@@ -516,8 +521,11 @@ src/
 │   ├── llm-config.ts             180 行  (LLM 配置 + API key 安全)
 │   ├── web-search.ts             180 行  (Web 搜索引擎 + DuckDuckGo)
 │   ├── git-executor.ts           200 行  (Git 操作封装 + 安全策略)
-│   ├── semantic-cache.ts         103 行  (语义缓存 + **metrics 集成**)     ✅ **修改**
-│   └── **metrics.ts**            **~220 行**  (**MetricsCollector** — 全局指标)  ✅ **新增**
+│   ├── semantic-cache.ts         103 行  (语义缓存 + **metrics 集成**)
+│   ├── metrics.ts                ~220 行  (MetricsCollector — 全局指标)
+│   ├── graph-build.ts            219 行  (确定性图谱内核：跨文件 calls/inherits + 符号级 import)
+│   ├── graph-enrich.ts           718 行  (GraphEnricher 管线：A/B/C 层 enricher)  ✅ **C 层新增**
+│   └── **embedding-service.ts**  **511 行**  (**EmbeddingService 抽象 + 桩 + LocalEmbeddingService(ONNX) + EmbeddingCache + 装饰器**)  ✅ **C #5 真实模型**
 ├── agents/
 │   ├── base-agent.ts              47 行  (Agent 基类 + **metrics 集成**)     ✅ **修改**
 │   ├── patch-generator-agent.ts   75 行  (Patch 生成 + LLM 增强)
@@ -535,7 +543,7 @@ src/
     ├── logger.ts                  36 行  (日志)
     └── hash.ts                     5 行  (哈希)
 
-总计: ~6,100 行代码 + **250** 个测试（**32** 个测试文件）
+总计: ~9,300 行代码 + **322** 个测试（**36** 个测试文件）
 ```
 
 ---

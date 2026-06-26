@@ -9,7 +9,7 @@ import { ContextBuilderAgent } from './agents/context-builder-agent.js';
 import { SolutionPlannerAgent } from './agents/solution-planner-agent.js';
 import { WebSearcherAgent } from './agents/web-searcher-agent.js';
 import { buildGraphBuilderFromFingerprints } from './core/graph-build.js';
-import { runEnrichers, A_LAYER_ENRICHERS, B_LAYER_ENRICHERS } from './core/graph-enrich.js';
+import { runEnrichers, A_LAYER_ENRICHERS, B_LAYER_ENRICHERS, C_LAYER_ENRICHERS } from './core/graph-enrich.js';
 import { writeFile, readFile, access, mkdir, stat } from 'fs/promises';
 import { join, resolve, dirname } from 'path';
 import { pathToFileURL } from 'url';
@@ -29,6 +29,14 @@ import { RootCauseAnalyzerAgent } from './agents/root-cause-analyzer-agent.js';
 import type { GitExecutionConfig } from './core/git-executor.js';
 import { SemanticCache } from './core/semantic-cache.js';
 import { ResultCache } from './core/result-cache.js';
+import {
+  EmbeddingConfigResolver,
+  createEmbeddingService,
+  CachedEmbeddingService,
+  EmbeddingCache,
+  type EmbeddingService,
+  type EmbeddingProviderConfig,
+} from './core/embedding-service.js';
 import { LearningAgent } from './agents/learning-agent.js';
 import { MetricsCollector, setGlobalMetricsCollector } from './core/metrics.js';
 
@@ -50,6 +58,11 @@ export interface AgentConfig {
   };
   /** Enable web search for solutions (default: true) */
   webSearch?: boolean;
+  /**
+   * C-layer embedding enrichment provider hint (e.g. 'template', 'local').
+   * Presence enables similar_to/related edges + concept clustering; omit to disable.
+   */
+  embeddings?: string;
   /** Git execution configuration */
   git?: Partial<GitExecutionConfig>;
 }
@@ -63,6 +76,8 @@ export class CodeRepairAgent {
   private semanticCache = new SemanticCache();
   private resultCache = new ResultCache();
   private metrics: MetricsCollector;
+  /** Resolved C-layer embedding config, or null when embedding enrichment is disabled. */
+  private embeddingConfig: EmbeddingProviderConfig | null = null;
 
   constructor(config: AgentConfig = {}) {
     this.config = config;
@@ -80,6 +95,11 @@ export class CodeRepairAgent {
     const provider = config.provider ?? config.llmService;
     const resolved = new LlmConfigResolver().resolve(provider, config.model);
     this.llmService = createLlmService(resolved?.config ?? null);
+
+    // Resolve C-layer embedding provider when enabled (disabled by default).
+    if (config.embeddings) {
+      this.embeddingConfig = new EmbeddingConfigResolver().resolve(config.embeddings).config;
+    }
 
     // Token estimator tied to the selected model for accurate budget tracking
     const modelName = resolved?.config.model ?? 'default';
@@ -140,6 +160,21 @@ export class CodeRepairAgent {
     return best;
   }
 
+  /**
+   * Build a cache-backed embedding service for C-layer enrichment, or null when
+   * embeddings are disabled. The {@link EmbeddingCache} is hydrated from persisted
+   * memory and the returned `persist` writes it back, so unchanged node texts hit
+   * across runs (init/sync) and the two C-layer enrichers share one cache.
+   */
+  makeEmbeddings(): { service: EmbeddingService; persist: () => void } | null {
+    if (!this.embeddingConfig) return null;
+    const cache = new EmbeddingCache();
+    cache.load(this.memory.getEmbeddingCache());
+    const base = createEmbeddingService(this.embeddingConfig);
+    const service = new CachedEmbeddingService(base, cache, this.embeddingConfig.model);
+    return { service, persist: () => this.memory.setEmbeddingCache(cache.export()) };
+  }
+
   async init(repoPath: string): Promise<{ files: string[]; fingerprintCount: number }> {
     const resolvedPath = resolve(repoPath);
     const stats = await stat(resolvedPath);
@@ -158,16 +193,25 @@ export class CodeRepairAgent {
     // cross-file calls/inherits + symbol-level import resolution), then run the
     // A-layer enrichers (implements/tested_by/depends_on + asset classifier) and
     // B-layer framework-aware enrichers (routes/events/middleware/data/tables).
+    // C-layer embedding enrichment (similar_to/related + concept clusters) runs
+    // only when an embedding provider is configured.
     const fingerprints = this.memory.getAllFingerprints();
     const builder = buildGraphBuilderFromFingerprints(fingerprints);
     const assetFiles = (result.result.assetFiles as string[]) ?? [];
     const sources = (result.result.sources as Record<string, string>) ?? {};
+    const emb = this.makeEmbeddings();
     await runEnrichers(
       builder,
       fingerprints,
-      { enabledLayers: ['A', 'B'], assetFiles, sources },
-      [...A_LAYER_ENRICHERS, ...B_LAYER_ENRICHERS]
+      {
+        enabledLayers: emb ? ['A', 'B', 'C'] : ['A', 'B'],
+        assetFiles,
+        sources,
+        embeddings: emb?.service,
+      },
+      emb ? [...A_LAYER_ENRICHERS, ...B_LAYER_ENRICHERS, ...C_LAYER_ENRICHERS] : [...A_LAYER_ENRICHERS, ...B_LAYER_ENRICHERS]
     );
+    emb?.persist();
     this.memory.setKnowledgeGraph(builder.build());
 
     const files = result.result.files as string[];
@@ -543,9 +587,10 @@ async function main(): Promise<void> {
     .command('init')
     .description('Initialize agent for a repository')
     .argument('[repo-path]', 'Path to repository', '.')
-    .action(async (repoPath: string) => {
+    .option('--embeddings [provider]', 'Enable C-layer embedding enrichment (similar_to/related edges + concept clusters). Optional provider: template (default) | local')
+    .action(async (repoPath: string, options: { embeddings?: string | boolean }) => {
       try {
-        const agent = new CodeRepairAgent({ verbose: true });
+        const agent = new CodeRepairAgent({ verbose: true, embeddings: normalizeEmbeddings(options.embeddings) });
         const result = await agent.init(repoPath);
         await agent.saveMemory(join(resolve(repoPath), '.repair-agent', 'memory.json'));
         console.log(`Initialized: ${result.fingerprintCount} files scanned`);
@@ -653,17 +698,21 @@ async function main(): Promise<void> {
     .description('Incremental sync: update knowledge graph based on file changes')
     .argument('[repo-path]', 'Path to repository', '.')
     .option('--force-full', 'Force full re-analysis of all files', false)
-    .action(async (repoPath: string, options: { forceFull: boolean }) => {
+    .option('--embeddings [provider]', 'Enable C-layer embedding enrichment (similar_to/related edges + concept clusters). Optional provider: template (default) | local')
+    .action(async (repoPath: string, options: { forceFull: boolean; embeddings?: string | boolean }) => {
       try {
-        const agent = new CodeRepairAgent({ verbose: true });
+        const agent = new CodeRepairAgent({ verbose: true, embeddings: normalizeEmbeddings(options.embeddings) });
         const memoryPath = join(resolve(repoPath), '.repair-agent', 'memory.json');
         await agent.loadMemory(memoryPath);
 
+        const emb = agent.makeEmbeddings();
         const syncStart = Date.now();
         const result = await syncRepo(agent.getMemory(), {
           repoPath: resolve(repoPath),
           forceFull: options.forceFull,
+          embeddings: emb?.service,
         });
+        emb?.persist();
 
         // Update memory with sync results
         const memory = agent.getMemory();
@@ -1209,6 +1258,16 @@ async function main(): Promise<void> {
 
 function collect(value: string, previous: string[]): string[] {
   return previous.concat([value]);
+}
+
+/**
+ * Normalize commander's `--embeddings [provider]` value into a provider hint
+ * (or undefined when the flag is absent). `--embeddings` alone → 'template';
+ * `--embeddings local` → 'local'; flag omitted → undefined (C layer disabled).
+ */
+function normalizeEmbeddings(value: string | boolean | undefined): string | undefined {
+  if (value === undefined || value === false) return undefined;
+  return value === true ? 'template' : value;
 }
 
 // Only run CLI when this file is executed directly (not imported)

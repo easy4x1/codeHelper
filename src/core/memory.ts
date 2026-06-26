@@ -13,6 +13,7 @@ import type {
   Convention,
   SemanticCacheEntry,
   ResultCacheEntry,
+  EmbeddingCacheEntry,
 } from './types.js';
 
 const DEFAULT_REPO_MEMORY: RepoMemory = {
@@ -42,6 +43,7 @@ export class MemoryMiddleware {
   private learnedMemory: LearnedMemory;
   private semanticCache: SemanticCacheEntry[];
   private resultCache: ResultCacheEntry[];
+  private embeddingCache: EmbeddingCacheEntry[];
 
   constructor(layer?: Partial<MemoryLayer>) {
     this.repoMemory = layer?.repoMemory ? { ...layer.repoMemory } : { ...DEFAULT_REPO_MEMORY };
@@ -56,6 +58,9 @@ export class MemoryMiddleware {
       : [];
     this.resultCache = layer?.resultCache
       ? JSON.parse(JSON.stringify(layer.resultCache))
+      : [];
+    this.embeddingCache = layer?.embeddingCache
+      ? JSON.parse(JSON.stringify(layer.embeddingCache))
       : [];
   }
 
@@ -75,6 +80,15 @@ export class MemoryMiddleware {
 
   setResultCache(entries: ResultCacheEntry[]): void {
     this.resultCache = JSON.parse(JSON.stringify(entries));
+  }
+
+  // Embedding Cache (C-layer vectors, persisted, LRU-capped)
+  getEmbeddingCache(): EmbeddingCacheEntry[] {
+    return JSON.parse(JSON.stringify(this.embeddingCache));
+  }
+
+  setEmbeddingCache(entries: EmbeddingCacheEntry[]): void {
+    this.embeddingCache = JSON.parse(JSON.stringify(entries));
   }
 
   // Repo Memory (L1)
@@ -230,6 +244,7 @@ export class MemoryMiddleware {
       learnedMemory: this.learnedMemory,
       semanticCache: this.semanticCache,
       resultCache: this.resultCache,
+      embeddingCache: this.embeddingCache,
     };
     return JSON.stringify(layer, null, 2);
   }
@@ -245,6 +260,7 @@ export class MemoryMiddleware {
       learnedMemory: parsed.learnedMemory,
       semanticCache: parsed.semanticCache,
       resultCache: parsed.resultCache,
+      embeddingCache: parsed.embeddingCache,
     });
   }
 }

@@ -77,6 +77,19 @@ describe('MemoryMiddleware', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].keywords).toEqual(['null', 'auth']);
   });
+
+  it('persists embedding cache entries through serialization', () => {
+    memory.setEmbeddingCache([
+      { key: 'bge:384:abc', vector: [0.1, 0.2, 0.3] },
+      { key: 'bge:384:def', vector: [0.4, 0.5, 0.6] },
+    ]);
+
+    const restored = MemoryMiddleware.deserialize(memory.serialize());
+    const entries = restored.getEmbeddingCache();
+    expect(entries).toHaveLength(2);
+    expect(entries[0].key).toBe('bge:384:abc');
+    expect(entries[0].vector).toEqual([0.1, 0.2, 0.3]);
+  });
 });
 
 describe('LearnedMemory (L3) — Phase 5', () => {

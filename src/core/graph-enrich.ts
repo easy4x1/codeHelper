@@ -1,6 +1,11 @@
 import { KnowledgeGraphBuilder } from './knowledge-graph.js';
 import { resolveImportPath } from './graph-build.js';
+import { cosineSimilarity, type EmbeddingService } from './embedding-service.js';
+import { createHash } from '../utils/hash.js';
+import { createLogger } from '../utils/logger.js';
 import type { FileFingerprint } from './types.js';
+
+const logger = createLogger('graph-enrich');
 
 /**
  * Graph enrichment pipeline.
@@ -39,7 +44,7 @@ export interface EnrichContext {
   /** D-layer dependency; absent → D enrichers self-skip. */
   llm?: unknown;
   /** C-layer dependency; absent → C enrichers self-skip. */
-  embeddings?: unknown;
+  embeddings?: EmbeddingService;
 }
 
 export interface GraphEnricher {
@@ -421,3 +426,294 @@ export const B_LAYER_ENRICHERS: GraphEnricher[] = [
   dataAccessEnricher,
   schemaTablesEnricher,
 ];
+
+// ---------------------------------------------------------------------------
+// C-layer enrichers — embedding similarity (zero token, needs an
+// EmbeddingService). Self-skip when `ctx.embeddings` is absent, mirroring how
+// B enrichers self-skip without `ctx.sources`.
+//
+// ⚠️ With the TemplateEmbeddingService stub these edges reflect lexical overlap,
+// not semantics — green tests prove the wiring, not the relationships. C-layer
+// "done" requires a real-model eval (docs/GRAPH-ENRICHMENT-PLAN.md §7.8).
+// ---------------------------------------------------------------------------
+
+/** Cosine ≥ this → `similar_to` (near-duplicate / reuse candidate). */
+const SIMILAR_THRESHOLD = 0.85;
+/** Cosine in [RELATED_THRESHOLD, SIMILAR_THRESHOLD) → `related` (topical). */
+const RELATED_THRESHOLD = 0.7;
+/** Keep at most this many similarity edges per node, to bound graph density. */
+const TOP_K = 5;
+/**
+ * Skip same-type similarity for a group larger than this. Pairwise cosine is
+ * O(n²); above this we log and skip the group rather than silently truncate or
+ * stall (project no-silent-caps rule). Bucketed top-K degrade is a later refinement.
+ */
+const MAX_GROUP_SIZE = 2000;
+
+/** An embeddable node: a graph node id paired with the text we embed for it. */
+interface EmbeddableNode {
+  id: string;
+  text: string;
+}
+
+/**
+ * Build the deterministic text we embed for each function/class/file node, from
+ * the structural fingerprint (+ raw source for the file's leading comment). The
+ * node `summary` is still empty at build time (a D-layer product), so we use the
+ * signature surface that is available now. See PLAN §7.2.
+ */
+function collectEmbeddableNodes(
+  fingerprints: Record<string, FileFingerprint>,
+  ctx: EnrichContext
+): { functions: EmbeddableNode[]; classes: EmbeddableNode[]; files: EmbeddableNode[] } {
+  const functions: EmbeddableNode[] = [];
+  const classes: EmbeddableNode[] = [];
+  const files: EmbeddableNode[] = [];
+  const sources = ctx.sources ?? {};
+
+  for (const fp of Object.values(fingerprints)) {
+    for (const fn of fp.functions) {
+      const params = fn.params.join(', ');
+      const ret = fn.returnType ? ` -> ${fn.returnType}` : '';
+      const calls = fn.calls?.length ? ` calls ${fn.calls.join(' ')}` : '';
+      functions.push({
+        id: `function:${fp.filePath}:${fn.name}`,
+        text: `${fn.name}(${params})${ret}${calls}`,
+      });
+    }
+    for (const cls of fp.classes) {
+      const parts = [cls.name];
+      if (cls.superClass) parts.push(`extends ${cls.superClass}`);
+      if (cls.implements?.length) parts.push(`implements ${cls.implements.join(' ')}`);
+      if (cls.methods.length) parts.push(`methods ${cls.methods.join(' ')}`);
+      if (cls.properties.length) parts.push(`props ${cls.properties.join(' ')}`);
+      classes.push({
+        id: `class:${fp.filePath}:${cls.name}`,
+        text: parts.join(' '),
+      });
+    }
+    const basename = fp.filePath.split('/').pop() ?? fp.filePath;
+    const exportNames = fp.exports.map((e) => e.name).join(' ');
+    const comment = leadingComment(sources[fp.filePath]);
+    files.push({
+      id: `file:${fp.filePath}`,
+      text: `${basename} ${exportNames} ${comment}`.trim(),
+    });
+  }
+
+  return { functions, classes, files };
+}
+
+/** Extract a short leading-comment / first-meaningful-line snippet from source. */
+function leadingComment(content: string | undefined): string {
+  if (!content) return '';
+  const lines = content.split('\n').slice(0, 20);
+  const picked: string[] = [];
+  for (const raw of lines) {
+    const line = raw.trim().replace(/^(\/\/+|\/\*+|\*+\/?|#)\s?/, '').trim();
+    if (line) picked.push(line);
+    if (picked.length >= 3) break;
+  }
+  return picked.join(' ').slice(0, 200);
+}
+
+/**
+ * Within one same-type group, add similarity edges. For each node keeps its
+ * top-K neighbours with cosine ≥ RELATED_THRESHOLD; each surviving pair becomes a
+ * single canonical edge (min id → max id) banded into `similar_to` / `related`.
+ * Canonicalizing the direction dedupes the i→j / j→i pair (both bands agree
+ * since cosine is symmetric) and keeps the propagation graph clean.
+ */
+function addSimilarityEdges(
+  builder: KnowledgeGraphBuilder,
+  group: EmbeddableNode[],
+  vectors: number[][]
+): void {
+  if (group.length > MAX_GROUP_SIZE) {
+    logger.warn(
+      `Skipping similarity for ${group.length} nodes (> ${MAX_GROUP_SIZE}); ` +
+        `pairwise cosine is O(n²). Bucketed degrade not yet implemented.`
+    );
+    return;
+  }
+
+  const n = group.length;
+  // Precompute the full upper-triangle similarities once.
+  const sims: Array<{ i: number; j: number; cos: number }> = [];
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const cos = cosineSimilarity(vectors[i], vectors[j]);
+      if (cos >= RELATED_THRESHOLD) sims.push({ i, j, cos });
+    }
+  }
+
+  // Per-node top-K selection (a pair survives if it is in EITHER endpoint's top-K).
+  const perNode = new Map<number, Array<{ other: number; cos: number }>>();
+  for (const { i, j, cos } of sims) {
+    (perNode.get(i) ?? perNode.set(i, []).get(i)!).push({ other: j, cos });
+    (perNode.get(j) ?? perNode.set(j, []).get(j)!).push({ other: i, cos });
+  }
+  const kept = new Set<string>();
+  for (const [node, neighbors] of perNode) {
+    neighbors.sort((a, b) => b.cos - a.cos);
+    for (const { other } of neighbors.slice(0, TOP_K)) {
+      const a = Math.min(node, other);
+      const b = Math.max(node, other);
+      kept.add(`${a}-${b}`);
+    }
+  }
+
+  for (const { i, j, cos } of sims) {
+    if (!kept.has(`${i}-${j}`)) continue;
+    const a = group[Math.min(i, j)].id;
+    const b = group[Math.max(i, j)].id;
+    const type = cos >= SIMILAR_THRESHOLD ? 'similar_to' : 'related';
+    builder.addEdge(a, b, type, cos);
+  }
+}
+
+/**
+ * `similar_to` / `related` edges — embed function/class/file nodes and connect
+ * the most-similar same-type pairs (threshold-banded, top-K capped). Compares
+ * only within a type to keep the candidate set small.
+ */
+export const embeddingsEnricher: GraphEnricher = {
+  name: 'embeddings',
+  layer: 'C',
+  async enrich(builder, fingerprints, ctx) {
+    const embeddings = ctx.embeddings;
+    if (!embeddings) return; // self-skip without a provider
+
+    const { functions, classes, files } = collectEmbeddableNodes(fingerprints, ctx);
+    for (const group of [functions, classes, files]) {
+      if (group.length < 2) continue;
+      if (group.length > MAX_GROUP_SIZE) {
+        // Surfaced here too: skip before paying for embeddings we won't use.
+        addSimilarityEdges(builder, group, []);
+        continue;
+      }
+      const vectors = await embeddings.embed(group.map((g) => g.text));
+      addSimilarityEdges(builder, group, vectors);
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
+// C-layer: concept clustering. Concepts are cross-cutting, so unlike the
+// similarity edges (within a node type) this pools function/class/file nodes
+// together and groups them by embedding proximity. C produces ANONYMOUS clusters
+// — the human-meaningful name ("session-refresh") is a D-layer product; here the
+// name is a placeholder common token, refined later by `rename` in D.
+// ---------------------------------------------------------------------------
+
+/** Cosine ≥ this connects two nodes into the same concept cluster. */
+const CLUSTER_THRESHOLD = 0.8;
+/** Clusters smaller than this are dropped (a lone node is not a concept). */
+const MIN_CLUSTER_SIZE = 2;
+/** Stop-words excluded when picking a cluster's placeholder name. */
+const NAME_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'this', 'that', 'from', 'into', 'class',
+  'function', 'const', 'return', 'export', 'import', 'extends', 'implements',
+  'methods', 'props', 'calls', 'void', 'string', 'number', 'boolean',
+]);
+
+/** Union-find root with path compression. */
+function find(parent: number[], x: number): number {
+  while (parent[x] !== x) {
+    parent[x] = parent[parent[x]];
+    x = parent[x];
+  }
+  return x;
+}
+
+/**
+ * Pick a placeholder name for a cluster: the alphanumeric token shared by the
+ * most members (document frequency), tie-broken by length then alphabetically
+ * for determinism. Returns null if no token is shared by ≥2 members.
+ */
+function commonToken(texts: string[]): string | null {
+  const df = new Map<string, number>();
+  for (const text of texts) {
+    const seen = new Set<string>();
+    for (const tok of text.toLowerCase().match(/[a-z][a-z0-9]{2,}/g) ?? []) {
+      if (NAME_STOPWORDS.has(tok) || seen.has(tok)) continue;
+      seen.add(tok);
+      df.set(tok, (df.get(tok) ?? 0) + 1);
+    }
+  }
+  let best: string | null = null;
+  let bestDf = 1; // require shared by ≥2
+  for (const [tok, count] of df) {
+    if (
+      count > bestDf ||
+      (count === bestDf &&
+        best !== null &&
+        (tok.length > best.length || (tok.length === best.length && tok < best)))
+    ) {
+      best = tok;
+      bestDf = count;
+    }
+  }
+  return best;
+}
+
+/**
+ * `concept:cluster:<hash>` nodes + member `related` edges. Pools all embeddable
+ * nodes, connects pairs with cosine ≥ CLUSTER_THRESHOLD via union-find, and emits
+ * one concept node per connected component of size ≥ MIN_CLUSTER_SIZE. The node
+ * id is a stable hash of the sorted member ids (deterministic across runs); the
+ * name is a placeholder common token (D layer renames it).
+ */
+export const clusterEnricher: GraphEnricher = {
+  name: 'concept_clusters',
+  layer: 'C',
+  async enrich(builder, fingerprints, ctx) {
+    const embeddings = ctx.embeddings;
+    if (!embeddings) return; // self-skip without a provider
+
+    const { functions, classes, files } = collectEmbeddableNodes(fingerprints, ctx);
+    const pooled = [...functions, ...classes, ...files];
+    if (pooled.length < MIN_CLUSTER_SIZE) return;
+    if (pooled.length > MAX_GROUP_SIZE) {
+      logger.warn(
+        `Skipping concept clustering for ${pooled.length} nodes (> ${MAX_GROUP_SIZE}); ` +
+          `pairwise cosine is O(n²). Bucketed degrade not yet implemented.`
+      );
+      return;
+    }
+
+    // NOTE: re-embeds the same nodes as embeddingsEnricher; task #4 caches
+    // vectors by fingerprint hash, making the second pass free.
+    const vectors = await embeddings.embed(pooled.map((p) => p.text));
+
+    // Connected components at CLUSTER_THRESHOLD.
+    const parent = pooled.map((_, i) => i);
+    for (let i = 0; i < pooled.length; i++) {
+      for (let j = i + 1; j < pooled.length; j++) {
+        if (cosineSimilarity(vectors[i], vectors[j]) >= CLUSTER_THRESHOLD) {
+          parent[find(parent, i)] = find(parent, j);
+        }
+      }
+    }
+    const groups = new Map<number, number[]>();
+    for (let i = 0; i < pooled.length; i++) {
+      const root = find(parent, i);
+      (groups.get(root) ?? groups.set(root, []).get(root)!).push(i);
+    }
+
+    for (const members of groups.values()) {
+      if (members.length < MIN_CLUSTER_SIZE) continue;
+      const memberIds = members.map((i) => pooled[i].id).sort();
+      const hash = createHash(memberIds.join('|')).slice(0, 8);
+      const clusterId = `concept:cluster:${hash}`;
+      const name = commonToken(members.map((i) => pooled[i].text)) ?? `cluster-${hash.slice(0, 6)}`;
+      builder.addNode({ id: clusterId, type: 'concept', name });
+      for (const id of memberIds) {
+        builder.addEdge(id, clusterId, 'related', 0.5);
+      }
+    }
+  },
+};
+
+/** All C-layer enrichers, in run order. */
+export const C_LAYER_ENRICHERS: GraphEnricher[] = [embeddingsEnricher, clusterEnricher];

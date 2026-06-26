@@ -5,3 +5,5 @@ dist/
 .DS_Store
 coverage/
 .env
+# Pre-downloaded ONNX embedding models (C-layer LocalEmbeddingService); fetched on demand
+models/

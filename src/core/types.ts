@@ -211,6 +211,8 @@ export interface MemoryLayer {
   semanticCache?: SemanticCacheEntry[];
   /** Cross-task analysis-result cache keyed by filePath::contentHash (persisted, LRU-capped). */
   resultCache?: ResultCacheEntry[];
+  /** C-layer embedding-vector cache keyed by `<model>:<dim>:<textHash>` (persisted, LRU-capped). */
+  embeddingCache?: EmbeddingCacheEntry[];
 }
 
 /** One cached SolutionPlan keyed by the tokenized keywords of its task description. */
@@ -225,6 +227,12 @@ export interface ResultCacheEntry {
   key: string;
   findings: Finding[];
   timestamp: string;
+}
+
+/** One cached embedding vector keyed by `<model>:<dim>:<textHash>`. */
+export interface EmbeddingCacheEntry {
+  key: string;
+  vector: number[];
 }
 
 // ============================================
