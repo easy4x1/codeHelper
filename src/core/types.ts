@@ -100,6 +100,8 @@ export interface ClassSignature {
   endLine: number;
   /** Name of the superclass this class extends, used to build `inherits` edges. */
   superClass?: string;
+  /** Names of interfaces this class implements, used to build `implements` edges. */
+  implements?: string[];
 }
 
 export interface ImportSignature {

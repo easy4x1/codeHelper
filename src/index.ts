@@ -8,7 +8,8 @@ import { FaultDetectorAgent } from './agents/fault-detector-agent.js';
 import { ContextBuilderAgent } from './agents/context-builder-agent.js';
 import { SolutionPlannerAgent } from './agents/solution-planner-agent.js';
 import { WebSearcherAgent } from './agents/web-searcher-agent.js';
-import { buildGraphFromFingerprints } from './core/graph-build.js';
+import { buildGraphBuilderFromFingerprints } from './core/graph-build.js';
+import { runEnrichers, A_LAYER_ENRICHERS } from './core/graph-enrich.js';
 import { writeFile, readFile, access, mkdir, stat } from 'fs/promises';
 import { join, resolve, dirname } from 'path';
 import { pathToFileURL } from 'url';
@@ -154,9 +155,18 @@ export class CodeRepairAgent {
     });
 
     // Build the knowledge graph from fingerprints (contains/imports/exports +
-    // cross-file calls/inherits + symbol-level import resolution).
+    // cross-file calls/inherits + symbol-level import resolution), then run the
+    // A-layer enrichers (implements/tested_by/depends_on + asset classifier).
     const fingerprints = this.memory.getAllFingerprints();
-    this.memory.setKnowledgeGraph(buildGraphFromFingerprints(fingerprints));
+    const builder = buildGraphBuilderFromFingerprints(fingerprints);
+    const assetFiles = (result.result.assetFiles as string[]) ?? [];
+    await runEnrichers(
+      builder,
+      fingerprints,
+      { enabledLayers: ['A'], assetFiles },
+      A_LAYER_ENRICHERS
+    );
+    this.memory.setKnowledgeGraph(builder.build());
 
     const files = result.result.files as string[];
 
