@@ -17,6 +17,8 @@
     "dev": "tsc --watch",
     "test": "vitest",
     "test:run": "vitest run",
+    "setup:embeddings": "bash scripts/fetch-embedding-model.sh",
+    "eval:embeddings": "node scripts/eval-embeddings.mjs",
     "prepublishOnly": "npm run test:run && npm run build"
   },
   "keywords": [
@@ -62,5 +64,8 @@
   },
   "engines": {
     "node": ">=24.0.0"
+  },
+  "optionalDependencies": {
+    "@huggingface/transformers": "^3.8.1"
   }
 }

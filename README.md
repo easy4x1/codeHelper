@@ -82,6 +82,17 @@ tavily:
 
 Get a free API key at [tavily.com](https://tavily.com). When rate limits are hit, it automatically falls back to DuckDuckGo → simulation.
 
+#### Embeddings (C-layer graph enrichment)
+
+The optional C-layer adds `similar_to`/`related` edges and `concept` clusters using a local ONNX model (zero token). One command downloads it (~34MB, into `./models`, git-ignored):
+
+```bash
+npm run setup:embeddings    # fetch the model once per machine
+code-agent init <repo> --embeddings local   # auto-detects ./models, no env var needed
+```
+
+On restricted networks the script uses a mirror; see [docs/EMBEDDING-SETUP.md](docs/EMBEDDING-SETUP.md) for pitfalls, config, and CI/Docker notes.
+
 ### Initialize a Repository
 
 ```bash
@@ -209,6 +220,7 @@ See [PROGRESS.md](PROGRESS.md) for detailed progress.
 - [DESIGN.md](DESIGN.md) — System design (v1.0.0)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Architecture details
 - [docs/API.md](docs/API.md) — CLI and programmatic API reference
+- [docs/EMBEDDING-SETUP.md](docs/EMBEDDING-SETUP.md) — C-layer embedding model setup + offline pitfalls
 - [PROGRESS.md](PROGRESS.md) — Implementation progress
 - [CONTEXT.md](CONTEXT.md) — Project background and decisions
 - [KEY-FINDINGS.md](KEY-FINDINGS.md) — Understand-Anything analysis

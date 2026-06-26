@@ -2,13 +2,14 @@ import { scanRepo } from './repo-scanner.js';
 import { classifyChange } from './fingerprint.js';
 import { KnowledgeGraphBuilder } from './knowledge-graph.js';
 import { addFileToGraph } from './graph-build.js';
-import { runEnrichers, A_LAYER_ENRICHERS, B_LAYER_ENRICHERS } from './graph-enrich.js';
+import { runEnrichers, A_LAYER_ENRICHERS, B_LAYER_ENRICHERS, C_LAYER_ENRICHERS } from './graph-enrich.js';
 import type {
   FileFingerprint,
   KnowledgeGraph,
   ChangeAnalysis,
   ChangeLevel,
 } from './types.js';
+import type { EmbeddingService } from './embedding-service.js';
 import { MemoryMiddleware } from './memory.js';
 import { readFile } from 'fs/promises';
 import { createLogger } from '../utils/logger.js';
@@ -18,6 +19,12 @@ const logger = createLogger('sync');
 export interface SyncOptions {
   repoPath: string;
   forceFull?: boolean;
+  /**
+   * Cache-backed embedding service for C-layer enrichment. When provided, the
+   * sync re-runs similar_to/related + concept clustering alongside A/B; when
+   * absent, only A/B run (C self-skips). Persisting the cache is the caller's job.
+   */
+  embeddings?: EmbeddingService;
 }
 
 export interface SyncResult {
@@ -153,12 +160,21 @@ export async function syncRepo(
   // rebuilt files already had their enricher edges cleared with their nodes,
   // and addNode/addEdge dedupe, so this restores cross-file A-layer enrichment
   // (implements/tested_by/depends_on + asset classifier) and B-layer framework
-  // patterns (routes/events/middleware/data-access/tables) without drift.
+  // patterns (routes/events/middleware/data-access/tables) without drift. C-layer
+  // embedding enrichment (similar_to/related + concept clusters) runs only when an
+  // embedding service is provided; its cache makes unchanged node texts free.
   await runEnrichers(
     builder,
     allFingerprints,
-    { enabledLayers: ['A', 'B'], assetFiles: scanResult.assetFiles, sources: scanResult.sources },
-    [...A_LAYER_ENRICHERS, ...B_LAYER_ENRICHERS]
+    {
+      enabledLayers: options.embeddings ? ['A', 'B', 'C'] : ['A', 'B'],
+      assetFiles: scanResult.assetFiles,
+      sources: scanResult.sources,
+      embeddings: options.embeddings,
+    },
+    options.embeddings
+      ? [...A_LAYER_ENRICHERS, ...B_LAYER_ENRICHERS, ...C_LAYER_ENRICHERS]
+      : [...A_LAYER_ENRICHERS, ...B_LAYER_ENRICHERS]
   );
 
   const result: SyncResult = {
