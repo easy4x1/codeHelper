@@ -315,7 +315,7 @@
 | **`tests/graph-enrich-b.test.ts`** | **12** | **GraphEnricher B 层：routes/events/middleware/data-access/tables + 保守模式负例** |
 | **`tests/graph-enrich-c.test.ts`** | **12** | **GraphEnricher C 层：similar_to/related 阈值分带 + top-K 剪枝 + 跨类型匿名聚类 + 确定性 id** |
 | **`tests/embedding-service.test.ts`** | **32** | **EmbeddingService 桩 + cosine + config 解析 + EmbeddingCache(LRU/持久化) + CachedEmbeddingService(仅 miss 触底) + LocalEmbeddingService 构造 + 真实 ONNX 模型 DoD eval(模型存在时启用,缺失则跳过)** |
-| **总计** | **328** | **36 个测试文件**（含 2 个真实 ONNX 模型 DoD 用例，模型缺失时自动跳过；Tavily 网络用例偶发超时与本层无关） |
+| **总计** | **351** | **39 个测试文件**（含 2 个真实 ONNX 模型 DoD 用例，模型缺失时自动跳过；Tavily 网络用例偶发超时与本层无关） |
 
 ---
 
@@ -413,6 +413,8 @@
 
 60. **知识图谱 C 层收尾（#5 真实 ONNX 模型 + DoD eval,C 层「真完成」）** — 落地 `LocalEmbeddingService`（`src/core/embedding-service.ts`）：经 **`@huggingface/transformers`（optional dep,懒加载）** 跑 ONNX,默认 `bge-small-en-v1.5`（q8 量化,384 维,~34MB）,mean-pool + L2 归一化,与 C 层管线全模型无关对接。① `createEmbeddingService` 的 `local` 分支从「warn 降级桩」改为返回真 `LocalEmbeddingService`（构造零成本,模型懒加载于首次 `embed()`,memoized）;`api` 仍降级桩并 warn（no-silent-caps）。② optional dep + 变量化动态 import（`const TRANSFORMERS_MODULE: string`）——native onnxruntime 装失败不阻断构建/测试,缺包时首次 embed 抛可执行的安装提示。③ 离线/受限网络支持：`EMBEDDING_MODEL_PATH`（本地模型目录)/`HF_ENDPOINT`（镜像主机)/`EMBEDDING_DTYPE` 经 `EmbeddingConfigResolver` 贯通;`scripts/fetch-embedding-model.sh` 默认走 `hf-mirror.com` 预下载到 `./models`（`.gitignore: models/`,不入 git）。④ **DoD eval（§7.8,可复现）**：`scripts/eval-embeddings.mjs` 真实模型 vs 桩 side-by-side——真实模型对**语义相关但词法不同**的签名对正确分带（`authenticate~login` **0.878/similar_to**、`HttpClient~ApiRequester` **0.703/related**、`deleteFile~removeDocument` **0.754/related**),桩全部漏判（0.571/0.349/0.582 → 无边）;无关对两者皆「—」。`tests/embedding-service.test.ts` 新增构造测试 + `describe.skipIf` 守卫的真实模型 DoD 用例（模型存在自动启用,缺失则跳过不静默通过）。⑤ 真实仓库 `init --embeddings local` 端到端：`authenticate→login` 产 `related` 边（w=0.834,桩在同对不产边）、跨类型 `concept:cluster` 成形、embeddingCache 持久化、`sync` 未变文件零嵌入（全缓存命中）。**C 层至此非桩全绿冒充——真实模型语义可用经人验证（详见 `docs/GRAPH-ENRICHMENT-PLAN.md` §7.8/§7.9）。**
 
+61. **知识图谱 D 层语义增强（LLM,默认关闭）** — 落地 D 层全部 enricher 与接线（详见 `docs/D-LAYER-IMPLEMENTATION.md`）。① 扩展 `LlmService` 接口 + Template/Anthropic/Http 三 Provider 实现：新增 `summarizeNode`、`nameConceptCluster`、`classifyArchitectureLayer`、`detectSemanticEdges` 四个语义方法；Template 给确定性占位输出，Anthropic 给真实 prompt，Http 当前 fallback 到 template（callApi 尚未实现）。② 新增 `src/core/llm-semantic-cache.ts` + `MemoryMiddleware` 持久化字段：按 `<enricher>:<nodeId/clusterId>:<contentHash>` 缓存，跨 `init/sync` 复用，避免未变文件重复调用 LLM。③ 4 个 D 层 enricher：`summaryEnricher`（function/class/file 节点 summary/tags）、`conceptNamingEnricher`（重命名 C 层匿名 `concept:cluster:*`）、`architectureLayerEnricher`（创建 `concept:layer:*` 节点并与文件连 `related` 边）、`semanticEdgeEnricher`（识别 `transforms`/`validates` 函数间语义边）。④ `KnowledgeGraphBuilder.updateNode` 支持 D 层更新现有节点。⑤ CLI `init`/`sync` 新增 `--semantic` 选项，`AgentConfig.semanticEnrichment` 默认 `false`，仅在显式开启时运行 D 层。⑥ 测试：`tests/graph-enrich-d.test.ts`（7 例）、`tests/llm-semantic-cache.test.ts`（5 例）、`tests/cli.test.ts` D 层集成断言；`scripts/eval-d-layer.mjs` 供真实 API key 下人工 review。**DoD：Template 测试可全绿，但「完成」必须跑一次真实 provider eval 并人工确认 cluster name / summary / layer 合理。**
+
 ### 6.2 剩余重要工作（按优先级）
 
 | 优先级 | 任务 | 说明 | 阶段 |
@@ -501,33 +503,35 @@ Phase 3（团队/高频场景）: 混合策略
 
 ## 7. 文件清单
 
-### 源代码（33 个文件）
+### 源代码（35 个文件）
 
 ```
 src/
-├── index.ts                      ~1050 行  (CLI 入口 + 主类 + **metrics CLI**)
+├── index.ts                      ~1330 行  (CLI 入口 + 主类 + metrics CLI + **D 层接线**)
 ├── core/
-│   ├── types.ts                  320 行  (核心类型)
-│   ├── fingerprint.ts            ~1000 行  (Tree-sitter 指纹计算 + **Go/Java**)
-│   ├── knowledge-graph.ts        100 行  (知识图谱构建器)
-│   ├── memory.ts                 128 行  (记忆层)
+│   ├── types.ts                  600 行  (核心类型 + D 层结果类型)
+│   ├── fingerprint.ts            ~1000 行  (Tree-sitter 指纹计算 + Go/Java)
+│   ├── knowledge-graph.ts        231 行  (知识图谱构建器 + updateNode)
+│   ├── memory.ts                 282 行  (记忆层 + D 层缓存)
 │   ├── repo-scanner.ts            96 行  (扫描器)
 │   ├── patch.ts                   82 行  (Patch 数据结构)
-│   ├── sync.ts                   163 行  (增量同步)
-│   ├── llm-service.ts            425 行  (LLM 服务抽象 + 多 Provider)
+│   ├── sync.ts                   254 行  (增量同步 + D 层接线)
+│   ├── llm-service.ts            ~1190 行  (LLM 服务抽象 + 多 Provider + **D 层语义方法**)
 │   ├── propagation.ts            303 行  (故障传播引擎)
-│   ├── token-budget.ts           170 行  (Token 预算管理器 + **metrics 集成**)
+│   ├── token-budget.ts           170 行  (Token 预算管理器 + metrics 集成)
 │   ├── token-estimator.ts        100 行  (模型感知 Token 估算)
 │   ├── llm-config.ts             180 行  (LLM 配置 + API key 安全)
 │   ├── web-search.ts             180 行  (Web 搜索引擎 + DuckDuckGo)
 │   ├── git-executor.ts           200 行  (Git 操作封装 + 安全策略)
-│   ├── semantic-cache.ts         103 行  (语义缓存 + **metrics 集成**)
+│   ├── semantic-cache.ts         103 行  (语义缓存 + metrics 集成)
 │   ├── metrics.ts                ~220 行  (MetricsCollector — 全局指标)
 │   ├── graph-build.ts            219 行  (确定性图谱内核：跨文件 calls/inherits + 符号级 import)
-│   ├── graph-enrich.ts           718 行  (GraphEnricher 管线：A/B/C 层 enricher)  ✅ **C 层新增**
-│   └── **embedding-service.ts**  **511 行**  (**EmbeddingService 抽象 + 桩 + LocalEmbeddingService(ONNX) + EmbeddingCache + 装饰器**)  ✅ **C #5 真实模型**
+│   ├── graph-enrich.ts           928 行  (GraphEnricher 管线：A/B/C/D 层 enricher)  ✅ **D 层新增**
+│   ├── graph-writer.ts           197 行  (fault/fix/pattern 节点写入图谱)
+│   ├── llm-semantic-cache.ts      39 行  (D 层 LLM 结果缓存)
+│   └── embedding-service.ts      511 行  (EmbeddingService 抽象 + LocalEmbeddingService(ONNX) + EmbeddingCache + 装饰器)
 ├── agents/
-│   ├── base-agent.ts              47 行  (Agent 基类 + **metrics 集成**)     ✅ **修改**
+│   ├── base-agent.ts              47 行  (Agent 基类 + metrics 集成)
 │   ├── patch-generator-agent.ts   75 行  (Patch 生成 + LLM 增强)
 │   ├── solution-planner-agent.ts  85 行  (LLM 增强方案规划 + 搜索集成)
 │   ├── fault-detector-agent.ts    96 行  (LLM 增强故障检测)
@@ -536,14 +540,14 @@ src/
 │   ├── web-searcher-agent.ts      65 行  (Web 搜索 Agent)
 │   ├── git-executor-agent.ts      35 行  (Git 执行 Agent)
 │   ├── root-cause-analyzer-agent.ts 145 行  (根因分析 Agent)
-│   └── learning-agent.ts         101 行  (学习 Agent)
+│   └── learning-agent.ts         118 行  (学习 Agent + pattern 入图)
 ├── interface/
 │   └── cli-review.ts              61 行  (Review UI)
 └── utils/
     ├── logger.ts                  36 行  (日志)
     └── hash.ts                     5 行  (哈希)
 
-总计: ~9,500 行代码 + **328** 个测试（**36** 个测试文件）
+总计: ~10,800 行代码 + **351** 个测试（**39** 个测试文件）
 ```
 
 ---

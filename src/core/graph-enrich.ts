@@ -3,7 +3,16 @@ import { resolveImportPath } from './graph-build.js';
 import { cosineSimilarity, type EmbeddingService } from './embedding-service.js';
 import { createHash } from '../utils/hash.js';
 import { createLogger } from '../utils/logger.js';
-import type { FileFingerprint } from './types.js';
+import type { LlmService } from './llm-service.js';
+import { LlmSemanticCache } from './llm-semantic-cache.js';
+import type {
+  FileFingerprint,
+  GraphNode,
+  NodeSummaryResult,
+  ConceptNameResult,
+  ArchitectureLayerResult,
+  SemanticEdgesResult,
+} from './types.js';
 
 const logger = createLogger('graph-enrich');
 
@@ -42,7 +51,9 @@ export interface EnrichContext {
    */
   sources?: Record<string, string>;
   /** D-layer dependency; absent → D enrichers self-skip. */
-  llm?: unknown;
+  llm?: LlmService;
+  /** D-layer result cache; absent → LLM calls are not cached. */
+  llmCache?: LlmSemanticCache;
   /** C-layer dependency; absent → C enrichers self-skip. */
   embeddings?: EmbeddingService;
 }
@@ -717,3 +728,202 @@ export const clusterEnricher: GraphEnricher = {
 
 /** All C-layer enrichers, in run order. */
 export const C_LAYER_ENRICHERS: GraphEnricher[] = [embeddingsEnricher, clusterEnricher];
+
+// ---------------------------------------------------------------------------
+// D-layer enrichers — LLM semantics (requires LlmService, optional cache).
+// These are gated by `enabledLayers` and self-skip when `ctx.llm` is absent.
+// ---------------------------------------------------------------------------
+
+function functionSignature(fn: FileFingerprint['functions'][number]): string {
+  const params = fn.params.join(', ');
+  const ret = fn.returnType ? `: ${fn.returnType}` : '';
+  return `${fn.name}(${params})${ret}`;
+}
+
+function classSignature(cls: FileFingerprint['classes'][number]): string {
+  const parts = [`class ${cls.name}`];
+  if (cls.superClass) parts.push(`extends ${cls.superClass}`);
+  if (cls.implements?.length) parts.push(`implements ${cls.implements.join(', ')}`);
+  return parts.join(' ');
+}
+
+function extractBody(content: string | undefined, startLine: number, endLine: number): string {
+  if (!content) return '';
+  const lines = content.split('\n');
+  const start = Math.max(0, startLine - 1);
+  const end = Math.min(lines.length, endLine);
+  return lines.slice(start, end).join('\n').slice(0, 1200);
+}
+
+function extractFileSnippet(content: string | undefined, maxLines = 50): string {
+  if (!content) return '';
+  return content.split('\n').slice(0, maxLines).join('\n').slice(0, 2000);
+}
+
+/**
+ * `summary` + `tags` — summarize function/class/file nodes using LLM.
+ */
+export const summaryEnricher: GraphEnricher = {
+  name: 'summary',
+  layer: 'D',
+  async enrich(builder, fingerprints, ctx) {
+    if (!ctx.llm) return;
+    const sources = ctx.sources ?? {};
+    for (const fp of Object.values(fingerprints)) {
+      const source = sources[fp.filePath];
+
+      // File node
+      const fileNodeId = `file:${fp.filePath}`;
+      if (builder.findNode(fileNodeId)) {
+        const key = `summary:${fileNodeId}:${fp.contentHash}`;
+        const cached = ctx.llmCache?.get<NodeSummaryResult>(key);
+        const result = cached ?? await ctx.llm.summarizeNode({
+          nodeType: 'file',
+          name: fp.filePath.split('/').pop() ?? fp.filePath,
+          signature: fp.filePath,
+          codeSnippet: extractFileSnippet(source),
+        });
+        builder.updateNode(fileNodeId, { summary: result.summary, tags: result.tags });
+        ctx.llmCache?.set(key, result);
+      }
+
+      // Function nodes
+      for (const fn of fp.functions) {
+        const nodeId = `function:${fp.filePath}:${fn.name}`;
+        if (!builder.findNode(nodeId)) continue;
+        const key = `summary:${nodeId}:${fp.contentHash}`;
+        const cached = ctx.llmCache?.get<NodeSummaryResult>(key);
+        const result = cached ?? await ctx.llm.summarizeNode({
+          nodeType: 'function',
+          name: fn.name,
+          signature: functionSignature(fn),
+          codeSnippet: extractBody(source, fn.startLine, fn.endLine),
+        });
+        builder.updateNode(nodeId, { summary: result.summary, tags: result.tags });
+        ctx.llmCache?.set(key, result);
+      }
+
+      // Class nodes
+      for (const cls of fp.classes) {
+        const nodeId = `class:${fp.filePath}:${cls.name}`;
+        if (!builder.findNode(nodeId)) continue;
+        const key = `summary:${nodeId}:${fp.contentHash}`;
+        const cached = ctx.llmCache?.get<NodeSummaryResult>(key);
+        const result = cached ?? await ctx.llm.summarizeNode({
+          nodeType: 'class',
+          name: cls.name,
+          signature: classSignature(cls),
+          codeSnippet: extractBody(source, cls.startLine, cls.endLine),
+        });
+        builder.updateNode(nodeId, { summary: result.summary, tags: result.tags });
+        ctx.llmCache?.set(key, result);
+      }
+    }
+  },
+};
+
+/**
+ * `concept` cluster naming — rename anonymous C-layer clusters using LLM.
+ */
+export const conceptNamingEnricher: GraphEnricher = {
+  name: 'concept_naming',
+  layer: 'D',
+  async enrich(builder, _fingerprints, ctx) {
+    if (!ctx.llm) return;
+    const clusters = builder.getNodesByType('concept').filter(n => n.id.startsWith('concept:cluster:'));
+    for (const cluster of clusters) {
+      const members = builder.findNeighbors(cluster.id, 'related');
+      if (members.length === 0) continue;
+      const key = `concept-name:${cluster.id}`;
+      const cached = ctx.llmCache?.get<ConceptNameResult>(key);
+      const result = cached ?? await ctx.llm.nameConceptCluster({
+        members: members.map(m => ({ id: m.id, name: m.name, summary: m.summary })),
+      });
+      builder.updateNode(cluster.id, { name: result.name });
+      ctx.llmCache?.set(key, result);
+    }
+  },
+};
+
+/**
+ * Architecture layer classification — create `concept:layer:*` nodes and link files.
+ */
+export const architectureLayerEnricher: GraphEnricher = {
+  name: 'architecture_layer',
+  layer: 'D',
+  async enrich(builder, fingerprints, ctx) {
+    if (!ctx.llm) return;
+    for (const fp of Object.values(fingerprints)) {
+      const fileNodeId = `file:${fp.filePath}`;
+      const fileNode = builder.findNode(fileNodeId);
+      if (!fileNode) continue;
+
+      const key = `layer:${fileNodeId}:${fp.contentHash}`;
+      const cached = ctx.llmCache?.get<ArchitectureLayerResult>(key);
+      const result = cached ?? await ctx.llm.classifyArchitectureLayer({
+        nodeType: 'file',
+        name: fileNode.name,
+        signature: fp.filePath,
+        neighbors: builder.findNeighbors(fileNodeId).map(n => n.name),
+      });
+
+      if (result.layer !== 'unknown') {
+        const layerId = `concept:layer:${result.layer}`;
+        builder.addNode({ id: layerId, type: 'concept', name: result.layer });
+        builder.addEdge(fileNodeId, layerId, 'related', result.confidence);
+        const existingTags = fileNode.tags ?? [];
+        const layerTag = `layer:${result.layer}`;
+        if (!existingTags.includes(layerTag)) {
+          builder.updateNode(fileNodeId, { tags: [...existingTags, layerTag] });
+        }
+      }
+      ctx.llmCache?.set(key, result);
+    }
+  },
+};
+
+/**
+ * Semantic edges — identify `transforms` / `validates` relationships between functions.
+ */
+export const semanticEdgeEnricher: GraphEnricher = {
+  name: 'semantic_edges',
+  layer: 'D',
+  async enrich(builder, fingerprints, ctx) {
+    if (!ctx.llm || !ctx.sources) return;
+    for (const fp of Object.values(fingerprints)) {
+      const source = ctx.sources[fp.filePath];
+      if (!source) continue;
+      if (fp.functions.length === 0) continue;
+
+      const functions = fp.functions.map(fn => {
+        const nodeId = `function:${fp.filePath}:${fn.name}`;
+        return {
+          id: nodeId,
+          name: fn.name,
+          signature: functionSignature(fn),
+          body: extractBody(source, fn.startLine, fn.endLine),
+        };
+      });
+
+      const key = `semantic-edges:${fp.filePath}:${fp.contentHash}`;
+      const cached = ctx.llmCache?.get<SemanticEdgesResult>(key);
+      const result = cached ?? await ctx.llm.detectSemanticEdges({ functions });
+
+      for (const edge of result.edges) {
+        if (edge.source === edge.target) continue;
+        if (!builder.findNode(edge.source) || !builder.findNode(edge.target)) continue;
+        if (edge.type !== 'transforms' && edge.type !== 'validates') continue;
+        builder.addEdge(edge.source, edge.target, edge.type, edge.confidence);
+      }
+      ctx.llmCache?.set(key, result);
+    }
+  },
+};
+
+/** All D-layer enrichers, in run order. */
+export const D_LAYER_ENRICHERS: GraphEnricher[] = [
+  summaryEnricher,
+  conceptNamingEnricher,
+  architectureLayerEnricher,
+  semanticEdgeEnricher,
+];

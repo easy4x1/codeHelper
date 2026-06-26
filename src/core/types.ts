@@ -78,6 +78,41 @@ export interface KnowledgeGraph {
 }
 
 // ============================================
+// D-layer LLM Semantic Results
+// ============================================
+export interface NodeSummaryResult {
+  summary: string;
+  tags: string[];
+}
+
+export interface ConceptNameResult {
+  name: string;
+  rationale: string;
+}
+
+export interface ArchitectureLayerResult {
+  layer: 'api' | 'service' | 'data' | 'ui' | 'utility' | 'unknown';
+  confidence: number;
+}
+
+export interface SemanticEdgeCandidate {
+  source: string;
+  target: string;
+  type: 'transforms' | 'validates';
+  confidence: number;
+}
+
+export interface SemanticEdgesResult {
+  edges: SemanticEdgeCandidate[];
+}
+
+export interface LlmSemanticCacheEntry {
+  key: string;
+  result: unknown;
+  timestamp: string;
+}
+
+// ============================================
 // Fingerprint Types
 // ============================================
 export interface FunctionSignature {
@@ -213,6 +248,8 @@ export interface MemoryLayer {
   resultCache?: ResultCacheEntry[];
   /** C-layer embedding-vector cache keyed by `<model>:<dim>:<textHash>` (persisted, LRU-capped). */
   embeddingCache?: EmbeddingCacheEntry[];
+  /** D-layer LLM semantic-result cache keyed by enricher + node/cluster/file hash. */
+  llmSemanticCache?: LlmSemanticCacheEntry[];
 }
 
 /** One cached SolutionPlan keyed by the tokenized keywords of its task description. */

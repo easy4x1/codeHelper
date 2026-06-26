@@ -1,5 +1,11 @@
 import { createLogger } from '../utils/logger.js';
 import { maskApiKey, type LlmProviderConfig } from './llm-config.js';
+import type {
+  NodeSummaryResult,
+  ConceptNameResult,
+  ArchitectureLayerResult,
+  SemanticEdgesResult,
+} from './types.js';
 
 const logger = createLogger('llm-service');
 
@@ -13,6 +19,29 @@ export interface LlmService {
   analyzeRootCause(params: RootCauseAnalysisParams): Promise<RootCauseAnalysisResult>;
   generateSolution(params: SolutionParams): Promise<SolutionResult>;
   generatePatch(params: PatchParams): Promise<PatchLlmResult>;
+
+  // D-layer LLM semantic enrichment
+  summarizeNode(params: {
+    nodeType: 'function' | 'class' | 'file';
+    name: string;
+    signature: string;
+    codeSnippet: string;
+  }): Promise<NodeSummaryResult>;
+
+  nameConceptCluster(params: {
+    members: Array<{ id: string; name: string; summary?: string }>;
+  }): Promise<ConceptNameResult>;
+
+  classifyArchitectureLayer(params: {
+    nodeType: string;
+    name: string;
+    signature: string;
+    neighbors: string[];
+  }): Promise<ArchitectureLayerResult>;
+
+  detectSemanticEdges(params: {
+    functions: Array<{ id: string; name: string; signature: string; body: string }>;
+  }): Promise<SemanticEdgesResult>;
 }
 
 export interface FaultAnalysisParams {
@@ -416,6 +445,128 @@ export class TemplateLlmService implements LlmService {
     return `// TODO: ${description}\n`;
   }
 
+  // ---------------------------------------------------------------------------
+  // D-layer semantic enrichment (template stubs)
+  // These produce deterministic, structurally valid output for wiring tests.
+  // Real semantic meaning requires Anthropic/Http provider.
+  // ---------------------------------------------------------------------------
+
+  async summarizeNode(params: {
+    nodeType: 'function' | 'class' | 'file';
+    name: string;
+    signature: string;
+    codeSnippet: string;
+  }): Promise<NodeSummaryResult> {
+    const tags = this.inferTags(params.name);
+    return {
+      summary: `${params.name} ${params.nodeType} — ${this.shortSnippet(params.codeSnippet, 80)}`,
+      tags,
+    };
+  }
+
+  async nameConceptCluster(params: {
+    members: Array<{ id: string; name: string; summary?: string }>;
+  }): Promise<ConceptNameResult> {
+    const names = params.members.map(m => m.name);
+    const common = this.commonToken(names);
+    const name = common ? `${common}-cluster` : `cluster-${names.length}`;
+    return {
+      name,
+      rationale: `Common token extracted from ${names.length} member(s)`,
+    };
+  }
+
+  async classifyArchitectureLayer(params: {
+    nodeType: string;
+    name: string;
+    signature: string;
+    neighbors: string[];
+  }): Promise<ArchitectureLayerResult> {
+    const text = `${params.name} ${params.signature} ${params.neighbors.join(' ')}`.toLowerCase();
+    if (text.includes('api') || text.includes('route') || text.includes('endpoint')) {
+      return { layer: 'api', confidence: 0.7 };
+    }
+    if (text.includes('service') || text.includes('business') || text.includes('logic')) {
+      return { layer: 'service', confidence: 0.7 };
+    }
+    if (text.includes('db') || text.includes('database') || text.includes('query') || text.includes('model')) {
+      return { layer: 'data', confidence: 0.7 };
+    }
+    if (text.includes('ui') || text.includes('component') || text.includes('render') || text.includes('view')) {
+      return { layer: 'ui', confidence: 0.7 };
+    }
+    if (text.includes('util') || text.includes('helper') || text.includes('lib')) {
+      return { layer: 'utility', confidence: 0.6 };
+    }
+    return { layer: 'unknown', confidence: 0.5 };
+  }
+
+  async detectSemanticEdges(params: {
+    functions: Array<{ id: string; name: string; signature: string; body: string }>;
+  }): Promise<SemanticEdgesResult> {
+    const edges: SemanticEdgesResult['edges'] = [];
+    const funcs = params.functions;
+    for (let i = 0; i < funcs.length; i++) {
+      const f = funcs[i];
+      const text = `${f.name} ${f.signature} ${f.body}`.toLowerCase();
+      for (let j = 0; j < funcs.length; j++) {
+        if (i === j) continue;
+        const g = funcs[j];
+        // Simple heuristic: if f mentions g and f looks like a validator/transformer
+        if (!text.includes(g.name.toLowerCase())) continue;
+        if (f.name.toLowerCase().includes('validate') || text.includes('validate')) {
+          edges.push({ source: f.id, target: g.id, type: 'validates', confidence: 0.6 });
+        } else if (
+          f.name.toLowerCase().includes('parse') ||
+          f.name.toLowerCase().includes('format') ||
+          f.name.toLowerCase().includes('transform') ||
+          f.name.toLowerCase().includes('convert')
+        ) {
+          edges.push({ source: f.id, target: g.id, type: 'transforms', confidence: 0.6 });
+        }
+      }
+    }
+    return { edges };
+  }
+
+  private inferTags(name: string): string[] {
+    const lower = name.toLowerCase();
+    const tags: string[] = [];
+    if (lower.includes('auth')) tags.push('auth');
+    if (lower.includes('user')) tags.push('user');
+    if (lower.includes('log')) tags.push('logging');
+    if (lower.includes('error') || lower.includes('exception')) tags.push('error-handling');
+    if (lower.includes('db') || lower.includes('query')) tags.push('data-access');
+    if (lower.includes('render') || lower.includes('component')) tags.push('ui');
+    if (tags.length === 0) tags.push('general');
+    return tags;
+  }
+
+  private shortSnippet(text: string, maxLen: number): string {
+    const cleaned = text.replace(/\s+/g, ' ').trim();
+    return cleaned.length > maxLen ? cleaned.slice(0, maxLen - 1) + '…' : cleaned;
+  }
+
+  private commonToken(names: string[]): string | null {
+    if (names.length === 0) return null;
+    const tokens = names.map(n => n.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+    const counts = new Map<string, number>();
+    for (const ts of tokens) {
+      for (const t of ts) {
+        counts.set(t, (counts.get(t) ?? 0) + 1);
+      }
+    }
+    let best: string | null = null;
+    let bestCount = 1;
+    for (const [t, c] of counts) {
+      if (c > bestCount && t.length > 2) {
+        best = t;
+        bestCount = c;
+      }
+    }
+    return best;
+  }
+
   private suggestNullSafety(code: string): string {
     // Simple transformation: a.b() -> a?.b()
     return code.replace(/(\w+)\.(\w+)\(/g, (match, obj, method) => {
@@ -706,6 +857,158 @@ Respond ONLY with a JSON object in this exact format (no markdown, no explanatio
       return this.fallback.generatePatch(params);
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // D-layer semantic enrichment (Anthropic)
+  // ---------------------------------------------------------------------------
+
+  async summarizeNode(params: {
+    nodeType: 'function' | 'class' | 'file';
+    name: string;
+    signature: string;
+    codeSnippet: string;
+  }): Promise<NodeSummaryResult> {
+    if (!this.client) {
+      logger.info('Anthropic client not available — using template fallback for summarizeNode');
+      return this.fallback.summarizeNode(params);
+    }
+    try {
+      const prompt = `You are a code documentation assistant. Given a code symbol, write a concise one-sentence summary and 1-5 relevant tags.
+
+Node type: ${params.nodeType}
+Name: ${params.name}
+Signature: ${params.signature}
+Code snippet:
+\`\`\`
+${params.codeSnippet}
+\`\`\`
+
+Respond ONLY with a JSON object in this exact format (no markdown, no explanation):
+{
+  "summary": "one sentence",
+  "tags": ["tag1", "tag2"]
+}`;
+      const response = await this.client.messages.create({
+        model: this.model,
+        max_tokens: 512,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      const content = response.content[0];
+      if (content.type !== 'text') throw new Error('Unexpected response type from Claude');
+      return this.extractJson(content.text) as NodeSummaryResult;
+    } catch (err) {
+      logger.error('Claude summarizeNode failed, using fallback:', err);
+      return this.fallback.summarizeNode(params);
+    }
+  }
+
+  async nameConceptCluster(params: {
+    members: Array<{ id: string; name: string; summary?: string }>;
+  }): Promise<ConceptNameResult> {
+    if (!this.client) {
+      logger.info('Anthropic client not available — using template fallback for nameConceptCluster');
+      return this.fallback.nameConceptCluster(params);
+    }
+    try {
+      const membersText = params.members
+        .map((m, i) => `${i + 1}. ${m.name}${m.summary ? ` — ${m.summary}` : ''}`)
+        .join('\n');
+      const prompt = `You are naming a cluster of related code symbols. Choose a short, meaningful 2-4 word concept name using camelCase or kebab-case.
+
+Members:\n${membersText}
+
+Respond ONLY with a JSON object in this exact format (no markdown, no explanation):
+{
+  "name": "AuthSession",
+  "rationale": "all members manage authentication session lifecycle"
+}`;
+      const response = await this.client.messages.create({
+        model: this.model,
+        max_tokens: 256,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      const content = response.content[0];
+      if (content.type !== 'text') throw new Error('Unexpected response type from Claude');
+      return this.extractJson(content.text) as ConceptNameResult;
+    } catch (err) {
+      logger.error('Claude nameConceptCluster failed, using fallback:', err);
+      return this.fallback.nameConceptCluster(params);
+    }
+  }
+
+  async classifyArchitectureLayer(params: {
+    nodeType: string;
+    name: string;
+    signature: string;
+    neighbors: string[];
+  }): Promise<ArchitectureLayerResult> {
+    if (!this.client) {
+      logger.info('Anthropic client not available — using template fallback for classifyArchitectureLayer');
+      return this.fallback.classifyArchitectureLayer(params);
+    }
+    try {
+      const prompt = `Classify the following code symbol into one architecture layer: api, service, data, ui, utility, or unknown.
+
+Node type: ${params.nodeType}
+Name: ${params.name}
+Signature: ${params.signature}
+Neighbors: ${params.neighbors.join(', ') || 'none'}
+
+Respond ONLY with a JSON object in this exact format (no markdown, no explanation):
+{
+  "layer": "service",
+  "confidence": 0.85
+}`;
+      const response = await this.client.messages.create({
+        model: this.model,
+        max_tokens: 128,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      const content = response.content[0];
+      if (content.type !== 'text') throw new Error('Unexpected response type from Claude');
+      return this.extractJson(content.text) as ArchitectureLayerResult;
+    } catch (err) {
+      logger.error('Claude classifyArchitectureLayer failed, using fallback:', err);
+      return this.fallback.classifyArchitectureLayer(params);
+    }
+  }
+
+  async detectSemanticEdges(params: {
+    functions: Array<{ id: string; name: string; signature: string; body: string }>;
+  }): Promise<SemanticEdgesResult> {
+    if (!this.client) {
+      logger.info('Anthropic client not available — using template fallback for detectSemanticEdges');
+      return this.fallback.detectSemanticEdges(params);
+    }
+    try {
+      const functionsText = params.functions
+        .map(f => `- ${f.name}(${f.signature})\n${f.body.slice(0, 400)}`)
+        .join('\n---\n');
+      const prompt = `Analyze the following functions and identify semantic relationships. Only include high-confidence pairs.
+- "transforms": function A converts/changes data and the result is used by function B
+- "validates": function A checks/constrains input before function B uses it
+
+Functions:\n${functionsText}
+
+Respond ONLY with a JSON object in this exact format (no markdown, no explanation):
+{
+  "edges": [
+    {"source": "function:file:validateInput", "target": "function:file:processInput", "type": "validates", "confidence": 0.9}
+  ]
+}`;
+      const response = await this.client.messages.create({
+        model: this.model,
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      const content = response.content[0];
+      if (content.type !== 'text') throw new Error('Unexpected response type from Claude');
+      return this.extractJson(content.text) as SemanticEdgesResult;
+    } catch (err) {
+      logger.error('Claude detectSemanticEdges failed, using fallback:', err);
+      return this.fallback.detectSemanticEdges(params);
+    }
+  }
 }
 
 // ============================================
@@ -788,6 +1091,71 @@ export class HttpLlmService implements LlmService {
     } catch (err) {
       logger.error(`${this.config.provider} generatePatch failed, using fallback:`, err);
       return this.fallback.generatePatch(params);
+    }
+  }
+
+  // D-layer semantic enrichment — HTTP providers currently fallback to template
+  // because callApi is not yet implemented. Keeping the stubs here ensures the
+  // interface is complete and wiring tests pass.
+  async summarizeNode(params: {
+    nodeType: 'function' | 'class' | 'file';
+    name: string;
+    signature: string;
+    codeSnippet: string;
+  }): Promise<NodeSummaryResult> {
+    if (!this.config.apiKey || !this.baseUrl) {
+      return this.fallback.summarizeNode(params);
+    }
+    try {
+      return await this.callApi('summarizeNode', params);
+    } catch (err) {
+      logger.error(`${this.config.provider} summarizeNode failed, using fallback:`, err);
+      return this.fallback.summarizeNode(params);
+    }
+  }
+
+  async nameConceptCluster(params: {
+    members: Array<{ id: string; name: string; summary?: string }>;
+  }): Promise<ConceptNameResult> {
+    if (!this.config.apiKey || !this.baseUrl) {
+      return this.fallback.nameConceptCluster(params);
+    }
+    try {
+      return await this.callApi('nameConceptCluster', params);
+    } catch (err) {
+      logger.error(`${this.config.provider} nameConceptCluster failed, using fallback:`, err);
+      return this.fallback.nameConceptCluster(params);
+    }
+  }
+
+  async classifyArchitectureLayer(params: {
+    nodeType: string;
+    name: string;
+    signature: string;
+    neighbors: string[];
+  }): Promise<ArchitectureLayerResult> {
+    if (!this.config.apiKey || !this.baseUrl) {
+      return this.fallback.classifyArchitectureLayer(params);
+    }
+    try {
+      return await this.callApi('classifyArchitectureLayer', params);
+    } catch (err) {
+      logger.error(`${this.config.provider} classifyArchitectureLayer failed, using fallback:`, err);
+      return this.fallback.classifyArchitectureLayer(params);
+    }
+  }
+
+  async detectSemanticEdges(params: {
+    functions: Array<{ id: string; name: string; signature: string; body: string }>;
+  }): Promise<SemanticEdgesResult> {
+    if (!this.config.apiKey || !this.baseUrl) {
+      return this.fallback.detectSemanticEdges(params);
+    }
+    try {
+      return await this.callApi('detectSemanticEdges', params);
+    } catch (err) {
+      logger.error(`${this.config.provider} detectSemanticEdges failed, using fallback:`, err);
+      return this.fallback.detectSemanticEdges(params);
     }
   }
 
