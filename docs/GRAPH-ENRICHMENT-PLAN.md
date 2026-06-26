@@ -144,12 +144,23 @@ D 层**现在就能实现**,不需要等真实 LLM。理由——抽象层项目
 
 | 优先级 | 层 | 依赖 | token | 说明 |
 |--------|----|------|-------|------|
-| 1 | **A 层** | 无 | 零 | 最确定,立即做(~9h),先把 GraphEnricher 骨架立起来 |
-| 2 | **B 层** | 框架特定 | 零 | 按项目技术栈选做 |
-| 3 | **C 层** | EmbeddingService(本地) | 零 | 解锁 similar_to / concept 聚类 |
-| 4 | **D 层** | LlmService | 需 API 才有质量 | **可与 A/B 并行实现**,标记「质量待真实 API eval」;配置层已就绪,无需等待 |
+| 1 | **A 层** | 无 | 零 | ✅ **已完成** — GraphEnricher 骨架 + implements/tested_by/depends_on + 文件分类器节点 |
+| 2 | **B 层** | 框架特定 | 零 | ✅ **已完成** — routes/events/middleware/data-access/tables(经 `EnrichContext.sources` 读源码) |
+| 3 | **C 层** | EmbeddingService(本地) | 零 | 🔲 **下一步** — 解锁 similar_to / concept 聚类 |
+| 4 | **D 层** | LlmService | 需 API 才有质量 | 🔲 **下一步** — **可与 C 并行**;配置层已就绪,DoD 须含一次真实 API eval(见 §4 警告) |
 
 **独立生命周期**(fault/fix/pattern)随分析管线演进,不在本计划主线。
+
+### 5.1 C/D 层交接说明(新会话从此处接)
+
+骨架与接线已就绪,C/D 只需「新增 enricher + 在 context 注入对应 Provider」:
+
+- **管线已在 `src/core/graph-enrich.ts`**:实现 `GraphEnricher` 接口(`name`/`layer`/`enrich`),追加到 `C_LAYER_ENRICHERS`/`D_LAYER_ENRICHERS` 数组即可。
+- **接线点**:`src/index.ts` 的 `init()` 与 `src/core/sync.ts` 的 `syncRepo()` 调用 `runEnrichers(builder, fingerprints, ctx, [...A, ...B, ...])`;C/D 上线时把 `enabledLayers` 加 `'C'`/`'D'`、把 `embeddings`/`llm` 注入 `ctx`,并把对应数组拼进 enricher 列表。
+- **`EnrichContext` 已留位**:`embeddings?`(C 层消费)、`llm?`(D 层消费),缺失 Provider 时 enricher 应自跳过(参照 B 层缺 `sources` 自跳过)。
+- **C 层**:需新增 `EmbeddingService` 抽象(本地 ONNX/`all-MiniLM` 或 API 双 Provider),enricher 算节点向量余弦相似度产 `similar_to`/`related` 边、对 function/class/file 节点聚类。
+- **D 层**:给 `LlmService` 接口加语义方法(如 `extractConcepts`/`analyzeSemantics`),三 Provider 全实现(Template 给确定性浅桩、Anthropic/Http 给真 prompt);enricher 产 `concept` 命名/架构分层/`transforms`·`validates` 意图边/节点摘要。**⚠️ 完成判定必须含一次真实 API eval,模板桩全绿 ≠ 可用(见 §4)。**
+- **缓存**:C/D 昂贵,产物建议用 fingerprint 键缓存(复用 `ResultCache` 模式),避免每次 sync 重算。
 
 ---
 
@@ -161,4 +172,4 @@ D 层**现在就能实现**,不需要等真实 LLM。理由——抽象层项目
 
 ---
 
-*本文档为后续开工依据,随实施进展更新。*
+*本文档为后续开工依据,随实施进展更新。A/B 层已完成(见 PROGRESS.md #57/#58),C/D 层待新会话实施。*

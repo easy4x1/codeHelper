@@ -29,6 +29,13 @@ export interface EnrichContext {
    * schema.prisma, …) for the classifier. Source files come from `fingerprints`.
    */
   assetFiles?: string[];
+  /**
+   * Raw file content keyed by file path, for B-layer pattern extraction
+   * (routes/events/middleware/data-access need call arguments the fingerprint
+   * does not capture; table extraction needs `.prisma`/`.sql` content). Holds
+   * source files plus schema asset files; absent → B enrichers self-skip.
+   */
+  sources?: Record<string, string>;
   /** D-layer dependency; absent → D enrichers self-skip. */
   llm?: unknown;
   /** C-layer dependency; absent → C enrichers self-skip. */
@@ -244,4 +251,173 @@ export const A_LAYER_ENRICHERS: GraphEnricher[] = [
   testedByEnricher,
   dependsOnEnricher,
   fileClassifierEnricher,
+];
+
+// ---------------------------------------------------------------------------
+// B-layer enrichers — framework-aware static pattern extraction (zero token).
+//
+// These read raw source from `ctx.sources` because the structural fingerprint
+// only records callee *names*, not the string arguments (route paths, event
+// names) these patterns need. Patterns are deliberately conservative to keep
+// false positives low; they are heuristic, not a full parse.
+// ---------------------------------------------------------------------------
+
+const HTTP_METHODS = 'get|post|put|delete|patch|options|head|all';
+
+/** Resolve a symbol name to a function node id (local first, then via imports). */
+function resolveFunctionNode(
+  name: string,
+  fp: FileFingerprint,
+  fingerprints: Record<string, FileFingerprint>,
+  knownPaths: Set<string>
+): string | null {
+  if (fp.functions.some(f => f.name === name)) {
+    return `function:${fp.filePath}:${name}`;
+  }
+  const srcFile = importedSymbolFiles(fp, knownPaths).get(name);
+  if (srcFile && fingerprints[srcFile]?.functions.some(f => f.name === name)) {
+    return `function:${srcFile}:${name}`;
+  }
+  return null;
+}
+
+/** Iterate source files (those with a fingerprint) and their raw content. */
+function* sourceContents(
+  fingerprints: Record<string, FileFingerprint>,
+  ctx: EnrichContext
+): Generator<{ filePath: string; content: string; fp: FileFingerprint }> {
+  const sources = ctx.sources ?? {};
+  for (const [filePath, fp] of Object.entries(fingerprints)) {
+    const content = sources[filePath];
+    if (content) yield { filePath, content, fp };
+  }
+}
+
+/**
+ * `endpoint` nodes + `routes` edges — HTTP route registrations, both
+ * call-style (`app.get('/path', …)`) and decorator-style (`@Get('/path')`).
+ * The route path must start with `/` to avoid matching `map.get('key')`.
+ */
+export const routesEnricher: GraphEnricher = {
+  name: 'routes',
+  layer: 'B',
+  enrich(builder, fingerprints, ctx) {
+    const callRe = new RegExp(`\\.(${HTTP_METHODS})\\s*\\(\\s*(['"\`])(/[^'"\`]*)\\2`, 'gi');
+    const decoratorRe = new RegExp(`@(${HTTP_METHODS})\\s*\\(\\s*(['"\`])(/[^'"\`]*)\\2`, 'gi');
+    for (const { filePath, content } of sourceContents(fingerprints, ctx)) {
+      const add = (method: string, path: string) => {
+        const label = `${method.toUpperCase()} ${path}`;
+        const id = `endpoint:${filePath}:${label}`;
+        builder.addNode({ id, type: 'endpoint', name: label, filePath });
+        builder.addEdge(`file:${filePath}`, id, 'routes', 0.8);
+      };
+      for (const m of content.matchAll(callRe)) add(m[1], m[3]);
+      for (const m of content.matchAll(decoratorRe)) add(m[1], m[3]);
+    }
+  },
+};
+
+/**
+ * `subscribes` / `publishes` edges — event listeners and emitters with a
+ * string event name, linked to a shared `concept:event:<name>` node.
+ */
+export const eventsEnricher: GraphEnricher = {
+  name: 'events',
+  layer: 'B',
+  enrich(builder, fingerprints, ctx) {
+    const subRe = /\.(on|once|addEventListener|subscribe)\s*\(\s*(['"`])([^'"`]+)\2/g;
+    const pubRe = /\.(emit|publish|dispatch|next)\s*\(\s*(['"`])([^'"`]+)\2/g;
+    for (const { filePath, content } of sourceContents(fingerprints, ctx)) {
+      const link = (event: string, edge: 'subscribes' | 'publishes') => {
+        const id = `concept:event:${event}`;
+        builder.addNode({ id, type: 'concept', name: event });
+        builder.addEdge(`file:${filePath}`, id, edge, 0.6);
+      };
+      for (const m of content.matchAll(subRe)) link(m[3], 'subscribes');
+      for (const m of content.matchAll(pubRe)) link(m[3], 'publishes');
+    }
+  },
+};
+
+/**
+ * `middleware` edges — `app.use(handler)` on a server-like receiver, where the
+ * argument is a bare identifier resolvable to a function node. Inline calls and
+ * non-server receivers are skipped.
+ */
+export const middlewareEnricher: GraphEnricher = {
+  name: 'middleware',
+  layer: 'B',
+  enrich(builder, fingerprints, ctx) {
+    const knownPaths = new Set(Object.keys(fingerprints));
+    const useRe = /\b(?:app|router|server|api)\.use\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/g;
+    for (const { filePath, content, fp } of sourceContents(fingerprints, ctx)) {
+      for (const m of content.matchAll(useRe)) {
+        const target = resolveFunctionNode(m[1], fp, fingerprints, knownPaths);
+        if (target) builder.addEdge(`file:${filePath}`, target, 'middleware', 0.6);
+      }
+    }
+  },
+};
+
+/**
+ * `reads_from` / `writes_to` edges — conservative filesystem and database
+ * access patterns linked to coarse `resource:filesystem` / `resource:database`
+ * nodes.
+ */
+export const dataAccessEnricher: GraphEnricher = {
+  name: 'data_access',
+  layer: 'B',
+  enrich(builder, fingerprints, ctx) {
+    const fsRead = /\bfs(?:\.promises)?\.(readFile|readFileSync|read|createReadStream)\b/;
+    const fsWrite = /\bfs(?:\.promises)?\.(writeFile|writeFileSync|write|appendFile|createWriteStream|unlink|rm|mkdir)\b/;
+    const dbQuery = /\b\w+\.query\s*\(/;
+    for (const { filePath, content } of sourceContents(fingerprints, ctx)) {
+      const fileId = `file:${filePath}`;
+      const link = (resource: string, edge: 'reads_from' | 'writes_to') => {
+        const id = `resource:${resource}`;
+        builder.addNode({ id, type: 'resource', name: resource });
+        builder.addEdge(fileId, id, edge, 0.5);
+      };
+      if (fsRead.test(content)) link('filesystem', 'reads_from');
+      if (fsWrite.test(content)) link('filesystem', 'writes_to');
+      if (dbQuery.test(content)) link('database', 'reads_from');
+    }
+  },
+};
+
+/**
+ * `table` nodes + `defines_schema` edges — Prisma `model` blocks and SQL
+ * `CREATE TABLE` statements, sourced from `.prisma` / `.sql` content. The
+ * `schema:<path>` node is created by the A-layer classifier.
+ */
+export const schemaTablesEnricher: GraphEnricher = {
+  name: 'schema_tables',
+  layer: 'B',
+  enrich(builder, _fingerprints, ctx) {
+    const prismaRe = /\bmodel\s+(\w+)\s*\{/g;
+    const sqlRe = /\bcreate\s+table\s+(?:if\s+not\s+exists\s+)?[`"'\[]?(\w+)/gi;
+    for (const [filePath, content] of Object.entries(ctx.sources ?? {})) {
+      const lower = filePath.toLowerCase();
+      let re: RegExp | null = null;
+      if (lower.endsWith('.prisma')) re = prismaRe;
+      else if (lower.endsWith('.sql')) re = sqlRe;
+      if (!re) continue;
+
+      for (const m of content.matchAll(re)) {
+        const name = m[1];
+        const tableId = `table:${filePath}:${name}`;
+        builder.addNode({ id: tableId, type: 'table', name, filePath });
+        builder.addEdge(`schema:${filePath}`, tableId, 'defines_schema', 0.8);
+      }
+    }
+  },
+};
+
+/** All B-layer enrichers, in run order. */
+export const B_LAYER_ENRICHERS: GraphEnricher[] = [
+  routesEnricher,
+  eventsEnricher,
+  middlewareEnricher,
+  dataAccessEnricher,
+  schemaTablesEnricher,
 ];
