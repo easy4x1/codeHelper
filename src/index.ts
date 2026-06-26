@@ -10,6 +10,8 @@ import { SolutionPlannerAgent } from './agents/solution-planner-agent.js';
 import { WebSearcherAgent } from './agents/web-searcher-agent.js';
 import { buildGraphBuilderFromFingerprints } from './core/graph-build.js';
 import { runEnrichers, A_LAYER_ENRICHERS, B_LAYER_ENRICHERS, C_LAYER_ENRICHERS } from './core/graph-enrich.js';
+import { KnowledgeGraphBuilder } from './core/knowledge-graph.js';
+import { recordFindingsAsFaults, recordPlanAsFixes } from './core/graph-writer.js';
 import { writeFile, readFile, access, mkdir, stat } from 'fs/promises';
 import { join, resolve, dirname } from 'path';
 import { pathToFileURL } from 'url';
@@ -367,6 +369,13 @@ export class CodeRepairAgent {
 
     const plan = plannerResult.result.plan as SolutionPlan;
 
+    // Write fault/fix nodes into the knowledge graph so that propagation and
+    // learning can reason about them structurally.
+    const graphBuilder = KnowledgeGraphBuilder.fromGraph(this.memory.getKnowledgeGraph());
+    recordFindingsAsFaults(graphBuilder, findings);
+    recordPlanAsFixes(graphBuilder, plan, findings);
+    this.memory.setKnowledgeGraph(graphBuilder.build());
+
     // Phase 3: Semantic Cache — store plan for future reuse
     this.semanticCache.store(task.description, plan);
 
@@ -525,15 +534,22 @@ export class CodeRepairAgent {
     }
 
     // 6. Record completed task into L3 learned memory
+    // Also ensure fix nodes exist when applyPlan is called directly without plan().
     if (record) {
+      const graphBuilder = KnowledgeGraphBuilder.fromGraph(this.memory.getKnowledgeGraph());
+      recordPlanAsFixes(graphBuilder, plan);
+      this.memory.setKnowledgeGraph(graphBuilder.build());
+
       const learningAgent = new LearningAgent(this.memory);
+      const taskContext = this.memory.getTaskContext();
+      const taskFindings = taskContext.taskId === plan.taskId ? taskContext.findings : undefined;
       learningAgent.recordTaskCompletion(
         plan.taskId,
         plan.problem.description,
         applied,
         plan.changes.length,
         applied.length > 0,
-        undefined,
+        taskFindings,
         plan,
       );
     }
@@ -644,6 +660,8 @@ async function main(): Promise<void> {
         const planPath = await agent.savePlan(plan, options.repo);
 
         // Record plan generation for learning
+        const taskContext = agent.getMemory().getTaskContext();
+        const taskFindings = taskContext.taskId === task.id ? taskContext.findings : undefined;
         const learningAgent = new LearningAgent(agent.getMemory());
         learningAgent.recordTaskCompletion(
           task.id,
@@ -651,7 +669,7 @@ async function main(): Promise<void> {
           task.context?.files || [],
           plan.changes.length,
           true, // plan generation always "succeeds"
-          undefined,
+          taskFindings,
           plan
         );
         await agent.saveMemory(memoryPath);

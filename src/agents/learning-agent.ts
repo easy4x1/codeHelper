@@ -1,5 +1,7 @@
 import { BaseAgent } from './base-agent.js';
 import { MemoryMiddleware } from '../core/memory.js';
+import { KnowledgeGraphBuilder } from '../core/knowledge-graph.js';
+import { recordPatterns } from '../core/graph-writer.js';
 import { PatternExtractor } from '../core/pattern-extractor.js';
 import { ConventionLearner } from '../core/convention-learner.js';
 import { RecommendationEngine } from '../core/recommendation-engine.js';
@@ -84,6 +86,21 @@ export class LearningAgent extends BaseAgent {
       }
       this.logger.info(`Extracted ${fixPatterns.length} fix pattern(s)`);
     }
+
+    // Write patterns into the knowledge graph.
+    const graphBuilder = KnowledgeGraphBuilder.fromGraph(this.memory.getKnowledgeGraph());
+    const sourceNodeIds = [
+      ...(findings?.flatMap(f => f.nodeIds) ?? []),
+      ...(plan?.changes.map(c => `file:${c.filePath}`) ?? []),
+    ].filter((v, i, a) => a.indexOf(v) === i);
+    const faultPatterns = findings && findings.length > 0
+      ? this.patternExtractor.extractFaultPatterns(findings)
+      : [];
+    const fixPatterns = plan
+      ? this.patternExtractor.extractFixPatterns(plan)
+      : [];
+    recordPatterns(graphBuilder, faultPatterns, fixPatterns, sourceNodeIds);
+    this.memory.setKnowledgeGraph(graphBuilder.build());
   }
 
   /**

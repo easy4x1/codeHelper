@@ -24,20 +24,25 @@ describe('CodeRepairAgent', () => {
     expect(result.files.length).toBeGreaterThan(0);
   });
 
-  it('plans a repair task', async () => {
+  it('writes fault and fix nodes into the knowledge graph after plan', async () => {
     const agent = new CodeRepairAgent({ provider: 'template' });
     await agent.init(fixturePath);
 
     const plan = await agent.plan({
-      id: 'task-1',
-      description: 'Fix potential issues',
+      id: 'task-graph-nodes',
+      description: 'Fix console log and null dereference issues',
       type: 'bug',
       priority: 'medium',
     });
 
-    expect(plan.id).toBeDefined();
-    expect(plan.changes).toBeDefined();
-    expect(plan.problem).toBeDefined();
+    expect(plan.changes.length).toBeGreaterThan(0);
+
+    const graph = agent.getMemory().getKnowledgeGraph();
+    expect(graph.nodes.some(n => n.type === 'fault')).toBe(true);
+    expect(graph.nodes.some(n => n.type === 'fix')).toBe(true);
+    expect(graph.edges.some(e => e.type === 'fixes')).toBe(true);
+    expect(graph.edges.some(e => e.type === 'relates_to_fault')).toBe(true);
+    expect(graph.edges.some(e => e.type === 'mitigates')).toBe(true);
   });
 
   it('serializes memory to disk', async () => {
