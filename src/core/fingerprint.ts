@@ -243,6 +243,26 @@ function extractSuperClass(node: unknown): string | undefined {
   return undefined;
 }
 
+// Helper: extract the interface names from a class_declaration's `implements` clause.
+function extractImplements(node: unknown): string[] | undefined {
+  for (const child of getChildren(node)) {
+    if (getType(child) === 'class_heritage') {
+      const text = (child as { text?: string }).text ?? '';
+      const match = text.match(/implements\s+(.+)$/s);
+      if (!match) continue;
+      const names = match[1]
+        .split(',')
+        .map(part => {
+          const m = part.trim().match(/^([A-Za-z_$][\w$.]*)/);
+          return m ? (m[1].split('.').pop() as string) : '';
+        })
+        .filter(Boolean);
+      if (names.length > 0) return names;
+    }
+  }
+  return undefined;
+}
+
 function extractTypeScript(rootNode: unknown): TreeSitterResult {
   const functions: FunctionSignature[] = [];
   const classes: ClassSignature[] = [];
@@ -329,6 +349,7 @@ function extractTypeScript(rootNode: unknown): TreeSitterResult {
             startLine: getStartLine(node),
             endLine: getEndLine(node),
             superClass: extractSuperClass(node),
+            implements: extractImplements(node),
           });
         }
         break;

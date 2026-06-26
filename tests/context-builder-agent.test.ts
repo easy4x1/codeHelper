@@ -73,4 +73,42 @@ describe('ContextBuilderAgent', () => {
     const prop = output.result.propagationResult as { affectedNodes: Array<{ nodeId: string }> };
     expect(prop.affectedNodes).toHaveLength(0);
   });
+
+  it('keeps downstream callees in recall but excludes them from root-cause candidates', async () => {
+    // Graph: caller --calls--> entry --calls--> callee
+    // Entry is the symptom site. The callee is reachable downstream (useful as
+    // context) but is NOT an upstream cause of the entry's fault, so it must not
+    // appear among root-cause candidates.
+    const graph = buildGraphFromFingerprints({
+      'x.ts': fp({
+        filePath: 'x.ts',
+        functions: [
+          { name: 'caller', params: [], isExported: true, startLine: 1, endLine: 2, calls: ['entry'] },
+          { name: 'entry', params: [], isExported: false, startLine: 3, endLine: 4, calls: ['callee'] },
+          { name: 'callee', params: [], isExported: false, startLine: 5, endLine: 6 },
+        ],
+      }),
+    });
+    const mem = new MemoryMiddleware();
+    mem.setKnowledgeGraph(graph);
+
+    const agent = new ContextBuilderAgent(mem);
+    const output = await agent.run({
+      taskId: 't4',
+      instruction: 'build context',
+      context: { nodeIds: ['function:x.ts:entry'] },
+    });
+
+    // Recall (both directions) still surfaces the downstream callee as context.
+    const recalledIds = (output.result.nodes as Array<{ id: string }>).map(n => n.id);
+    expect(recalledIds).toContain('function:x.ts:callee');
+
+    // Root-cause candidates (upstream only) include the caller, never the callee.
+    const prop = output.result.propagationResult as {
+      rootCauseCandidates: Array<{ nodeId: string }>;
+    };
+    const rootCauseIds = prop.rootCauseCandidates.map(c => c.nodeId);
+    expect(rootCauseIds).toContain('function:x.ts:caller');
+    expect(rootCauseIds).not.toContain('function:x.ts:callee');
+  });
 });

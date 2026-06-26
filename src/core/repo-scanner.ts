@@ -1,6 +1,7 @@
 import { readdir, readFile, stat } from 'fs/promises';
 import { join, relative, extname } from 'path';
 import { computeFingerprint } from './fingerprint.js';
+import { classifyAssetFile } from './graph-enrich.js';
 import type { FileFingerprint } from './types.js';
 
 export interface ScanResult {
@@ -8,6 +9,8 @@ export interface ScanResult {
   fingerprints: FileFingerprint[];
   languages: Set<string>;
   skippedFiles: string[];
+  /** Non-source files (config/document/pipeline/service/schema) for graph enrichment. */
+  assetFiles: string[];
 }
 
 const SOURCE_EXTENSIONS = new Set([
@@ -20,7 +23,7 @@ const SOURCE_EXTENSIONS = new Set([
 const IGNORED_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', 'out',
   'coverage', '.nyc_output', '.cache', '.tmp',
-  'vendor', '.venv', 'venv', '__pycache__',
+  'vendor', '.venv', 'venv', '__pycache__', '.repair-agent',
 ]);
 
 const IGNORED_FILES = new Set([
@@ -32,8 +35,9 @@ export async function scanRepo(repoPath: string): Promise<ScanResult> {
   const files: { filePath: string; absolutePath: string }[] = [];
   const languages = new Set<string>();
   const skippedFiles: string[] = [];
+  const assetFiles: string[] = [];
 
-  await walkDir(repoPath, repoPath, files, languages, skippedFiles);
+  await walkDir(repoPath, repoPath, files, languages, skippedFiles, assetFiles);
 
   const fingerprints: FileFingerprint[] = [];
   await Promise.all(
@@ -48,7 +52,7 @@ export async function scanRepo(repoPath: string): Promise<ScanResult> {
     })
   );
 
-  return { files, fingerprints, languages, skippedFiles };
+  return { files, fingerprints, languages, skippedFiles, assetFiles };
 }
 
 async function walkDir(
@@ -56,7 +60,8 @@ async function walkDir(
   currentPath: string,
   files: { filePath: string; absolutePath: string }[],
   languages: Set<string>,
-  skippedFiles: string[]
+  skippedFiles: string[],
+  assetFiles: string[]
 ): Promise<void> {
   const entries = await readdir(currentPath, { withFileTypes: true });
 
@@ -68,7 +73,7 @@ async function walkDir(
 
     if (entry.isDirectory()) {
       if (!IGNORED_DIRS.has(entry.name)) {
-        await walkDir(rootPath, join(currentPath, entry.name), files, languages, skippedFiles);
+        await walkDir(rootPath, join(currentPath, entry.name), files, languages, skippedFiles, assetFiles);
       }
       continue;
     }
@@ -76,13 +81,20 @@ async function walkDir(
     if (entry.isFile()) {
       if (IGNORED_FILES.has(entry.name)) continue;
 
-      const ext = extname(entry.name);
-      if (!SOURCE_EXTENSIONS.has(ext)) continue;
-
       const absolutePath = join(currentPath, entry.name);
       const filePath = relative(rootPath, absolutePath);
-      files.push({ filePath, absolutePath });
-      languages.add(ext);
+
+      const ext = extname(entry.name);
+      if (SOURCE_EXTENSIONS.has(ext)) {
+        files.push({ filePath, absolutePath });
+        languages.add(ext);
+        continue;
+      }
+
+      // Non-source file — keep it if the classifier recognizes it.
+      if (classifyAssetFile(filePath)) {
+        assetFiles.push(filePath);
+      }
     }
   }
 }

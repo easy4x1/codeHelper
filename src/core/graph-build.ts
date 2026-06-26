@@ -194,15 +194,26 @@ export function addFileToGraph(
 }
 
 /**
- * Build a complete knowledge graph from a map of file fingerprints.
+ * Build a knowledge-graph builder (deterministic core) from a map of file
+ * fingerprints. Returns the builder so callers can run enrichers before
+ * `build()`. `buildGraphFromFingerprints` is the build()-and-return shortcut.
  */
-export function buildGraphFromFingerprints(
+export function buildGraphBuilderFromFingerprints(
   fingerprints: Record<string, FileFingerprint>
-): KnowledgeGraph {
+): KnowledgeGraphBuilder {
   const builder = new KnowledgeGraphBuilder();
   const knownPaths = new Set(Object.keys(fingerprints));
   for (const [filePath, fp] of Object.entries(fingerprints)) {
     addFileToGraph(builder, filePath, fp, fingerprints, knownPaths);
   }
-  return builder.build();
+  return builder;
+}
+
+/**
+ * Build a complete knowledge graph from a map of file fingerprints.
+ */
+export function buildGraphFromFingerprints(
+  fingerprints: Record<string, FileFingerprint>
+): KnowledgeGraph {
+  return buildGraphBuilderFromFingerprints(fingerprints).build();
 }

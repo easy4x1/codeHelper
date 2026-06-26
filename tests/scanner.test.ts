@@ -31,4 +31,11 @@ describe('repo-scanner', () => {
     const importMap = buildImportMap(result.fingerprints);
     expect(importMap['src/index.ts']).toContain('./utils.js');
   });
+
+  it('collects classifiable non-source asset files', async () => {
+    const result = await scanRepo(fixturePath);
+    expect(result.assetFiles).toContain('package.json');
+    // source files are not asset files
+    expect(result.assetFiles).not.toContain('src/index.ts');
+  });
 });

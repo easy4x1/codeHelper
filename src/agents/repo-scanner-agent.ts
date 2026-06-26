@@ -32,6 +32,7 @@ export class RepoScannerAgent extends BaseAgent {
       fingerprintCount: result.fingerprints.length,
       languages: Array.from(result.languages),
       importMap,
+      assetFiles: result.assetFiles,
     };
   }
 }

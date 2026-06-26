@@ -141,6 +141,18 @@ export class Child extends Base {
     expect(fp.classes[0].superClass).toBe('Base');
   });
 
+  it('extracts the interfaces a class implements', () => {
+    const content = `import { Runnable, Closeable } from './contracts';
+export class Worker extends Base implements Runnable, Closeable {
+  run() {}
+}
+`;
+    const fp = computeFingerprint('src/worker.ts', content);
+    expect(fp.classes).toHaveLength(1);
+    expect(fp.classes[0].superClass).toBe('Base');
+    expect(fp.classes[0].implements).toEqual(['Runnable', 'Closeable']);
+  });
+
   it('extracts callee names invoked inside a function body', () => {
     const content = `import { helper } from './helper';
 export function caller() {

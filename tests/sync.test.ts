@@ -139,4 +139,18 @@ export class App {
     expect(result.updatedGraph.nodes.length).toBeGreaterThan(0);
     expect(Object.keys(result.updatedFingerprints).length).toBe(2);
   });
+
+  it('runs A-layer enrichers (depends_on edge + asset classifier node)', async () => {
+    const memory = new MemoryMiddleware();
+    memory.setFingerprint(computeFingerprint('src/index.ts', `import { helper } from './utils.js';
+export function main(): void { helper(); }
+`));
+    memory.setFingerprint(computeFingerprint('src/utils.ts', `export function helper(): string { return 'hello'; }`));
+
+    const result = await syncRepo(memory, { repoPath: fixturePath, forceFull: true });
+
+    const edges = result.updatedGraph.edges;
+    expect(edges.some(e => e.source === 'file:src/index.ts' && e.type === 'depends_on' && e.target === 'file:src/utils.ts')).toBe(true);
+    expect(result.updatedGraph.nodes.some(n => n.id === 'config:package.json' && n.type === 'config')).toBe(true);
+  });
 });

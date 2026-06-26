@@ -100,6 +100,8 @@ export interface ClassSignature {
   endLine: number;
   /** Name of the superclass this class extends, used to build `inherits` edges. */
   superClass?: string;
+  /** Names of interfaces this class implements, used to build `implements` edges. */
+  implements?: string[];
 }
 
 export interface ImportSignature {
@@ -207,12 +209,21 @@ export interface MemoryLayer {
   learnedMemory: LearnedMemory;
   /** Cross-task plan cache keyed by description keywords (persisted for CLI reuse). */
   semanticCache?: SemanticCacheEntry[];
+  /** Cross-task analysis-result cache keyed by filePath::contentHash (persisted, LRU-capped). */
+  resultCache?: ResultCacheEntry[];
 }
 
 /** One cached SolutionPlan keyed by the tokenized keywords of its task description. */
 export interface SemanticCacheEntry {
   keywords: string[];
   plan: SolutionPlan;
+  timestamp: string;
+}
+
+/** One cached analysis result keyed by `filePath::contentHash`. */
+export interface ResultCacheEntry {
+  key: string;
+  findings: Finding[];
   timestamp: string;
 }
 
@@ -311,7 +322,7 @@ export interface RepairOutcome {
   approved: boolean;
   applied: string[];
   failed: string[];
-  git?: { success: boolean; messages: string[]; errors: string[] };
+  git?: { success: boolean; messages: string[]; errors: string[]; prUrl?: string };
 }
 
 // ============================================

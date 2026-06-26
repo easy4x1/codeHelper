@@ -71,8 +71,53 @@ export interface GitExecutionResult {
   branch?: string;
   commitHash?: string;
   pushed: boolean;
+  prUrl?: string;
   messages: string[];
   errors: string[];
+}
+
+/** Parsed components of a git remote URL. */
+export interface RemoteInfo {
+  host: string;
+  owner: string;
+  repo: string;
+}
+
+/**
+ * Parse a git remote URL (SSH or HTTPS) into host/owner/repo.
+ * Returns null if the URL is not a recognized git remote.
+ */
+export function parseRemoteUrl(remote: string): RemoteInfo | null {
+  const trimmed = remote.trim();
+  if (!trimmed) return null;
+
+  // SSH form: git@host:owner/repo(.git)
+  const sshMatch = trimmed.match(/^git@([^:]+):([^/]+)\/(.+?)(?:\.git)?$/);
+  if (sshMatch) {
+    return { host: sshMatch[1], owner: sshMatch[2], repo: sshMatch[3] };
+  }
+
+  // HTTPS/HTTP form: https://host/owner/repo(.git)
+  const httpsMatch = trimmed.match(/^https?:\/\/([^/]+)\/([^/]+)\/(.+?)(?:\.git)?$/);
+  if (httpsMatch) {
+    return { host: httpsMatch[1], owner: httpsMatch[2], repo: httpsMatch[3] };
+  }
+
+  return null;
+}
+
+/**
+ * Build a GitHub-style "compare" URL for opening a pull request manually.
+ * Returns null if the remote cannot be parsed.
+ */
+export function buildCompareUrl(
+  remote: string,
+  base: string,
+  head: string
+): string | null {
+  const info = parseRemoteUrl(remote);
+  if (!info) return null;
+  return `https://${info.host}/${info.owner}/${info.repo}/compare/${base}...${head}?expand=1`;
 }
 
 /**
@@ -164,6 +209,76 @@ export class GitExecutor {
 
     logger.info(`Pushing ${targetBranch} to ${targetRemote}`);
     await execAsync(`git push ${targetRemote} ${targetBranch}${forceFlag}`);
+  }
+
+  /** Check whether the GitHub CLI (`gh`) is installed and on PATH. */
+  async isGhAvailable(): Promise<boolean> {
+    try {
+      await execAsync('gh --version', { timeout: 5000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Resolve the push remote's URL, or null if it cannot be read. */
+  async getRemoteUrl(remote?: string): Promise<string | null> {
+    const targetRemote = remote || this.config.push.remote;
+    try {
+      const { stdout } = await execAsync(`git remote get-url ${targetRemote}`);
+      return stdout.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Open a pull request for `head` against `base`.
+   * Uses `gh pr create` when available; otherwise falls back to a manual
+   * compare URL the user can open in a browser. Never throws — failures and
+   * fallbacks are reported via the returned object.
+   */
+  async createPullRequest(
+    title: string,
+    body: string,
+    head: string,
+    base?: string
+  ): Promise<{ created: boolean; url?: string; manual: boolean; message: string }> {
+    const baseBranch = base || this.config.branch.baseBranch;
+
+    if (await this.isGhAvailable()) {
+      try {
+        const cmd =
+          `gh pr create --title "${title.replace(/"/g, '\\"')}"` +
+          ` --body "${body.replace(/"/g, '\\"')}"` +
+          ` --base ${baseBranch} --head ${head}`;
+        logger.info(`Creating pull request: ${head} → ${baseBranch}`);
+        const { stdout } = await execAsync(cmd);
+        const url = stdout.trim().split('\n').find(l => l.startsWith('http')) || stdout.trim();
+        return { created: true, url, manual: false, message: `Pull request created: ${url}` };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn(`gh pr create failed, falling back to manual URL: ${msg}`);
+      }
+    }
+
+    // Fallback: build a manual compare URL from the remote.
+    const remoteUrl = await this.getRemoteUrl();
+    const compareUrl = remoteUrl ? buildCompareUrl(remoteUrl, baseBranch, head) : null;
+    if (compareUrl) {
+      return {
+        created: false,
+        url: compareUrl,
+        manual: true,
+        message: `Open a pull request manually: ${compareUrl}`,
+      };
+    }
+
+    return {
+      created: false,
+      manual: true,
+      message: 'Could not create a pull request: `gh` is unavailable and the remote URL could not be resolved.',
+    };
   }
 
   async getDiff(): Promise<string> {
@@ -278,6 +393,17 @@ export class GitExecutor {
         await this.push(currentBranch);
         result.pushed = true;
         result.messages.push(`Pushed to ${this.config.push.remote}/${currentBranch}`);
+
+        // Optionally open a pull request for the pushed branch.
+        if (this.config.push.createPR && !(await this.isProtectedBranch(currentBranch))) {
+          const pr = await this.createPullRequest(
+            commitMessage,
+            `Automated fix: ${description}`,
+            currentBranch
+          );
+          if (pr.url) result.prUrl = pr.url;
+          result.messages.push(pr.message);
+        }
       }
 
       result.success = true;
