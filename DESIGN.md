@@ -163,6 +163,13 @@ interface MemoryLayer {
 }
 ```
 
+> **实现差异说明（L1 嵌入存储位置）**
+>
+> 实际 `RepoMemory`（`src/core/types.ts`）仅含 `knowledgeGraph`/`fingerprints`/`importMap`/`version`。
+> - `embeddings: EmbeddingStore` — 不在 repoMemory，改为顶层 `MemoryLayer.embeddingCache`（C 层解耦设计，见 §3.2.2）。
+> - `apiIndex: APIIndex` — 未单独建模，对外接口由各指纹的 `exports` 表达，图谱 `exports` 边可遍历。
+> - 顶层另持久化跨任务缓存：`semanticCache`（plan 复用）、`resultCache`（分析结果）、`llmSemanticCache`（D 层 LLM 结果）。
+
 #### 3.2.2 文件指纹机制 (Fingerprinting)
 
 借鉴 Understand-Anything 的指纹机制，针对修复场景扩展：
@@ -177,10 +184,6 @@ interface FileFingerprint {
   classes: ClassSignature[];
   imports: ImportSignature[];
   exports: ExportSignature[];
-  
-  // 语义签名（新增）
-  semanticEmbedding: number[];          // 文件语义向量
-  apiSurface: APISignature[];           // 对外接口签名
   
   totalLines: number;
   hasStructuralAnalysis: boolean;
@@ -201,6 +204,19 @@ interface ChangeAnalysis {
   };
 }
 ```
+
+> **实现差异说明（语义嵌入解耦，与原设计不同）**
+>
+> 原设计在 `FileFingerprint` 内置 `semanticEmbedding: number[]` 与 `apiSurface` 字段。
+> 实际实现中，**语义嵌入已从指纹解耦**，改由知识图谱 C 层 enricher 按需计算并经独立的
+> `EmbeddingCache` 存储（键 `<model>:<dim>:<textHash>`，持久化进 `memory.json`）。此演进的收益：
+>
+> 1. **模型无关** — 切换嵌入模型时缓存键自动失效，指纹结构不受影响。
+> 2. **指纹精简** — 大向量不再撑大指纹存储。
+> 3. **跨文件去重 + 增量命中** — text-hash 键使相同文本只嵌入一次，`sync` 未变文件零嵌入。
+> 4. **按需计算** — 嵌入文本在 enrich 时（`collectEmbeddableNodes`）从结构指纹现算，仅在启用 `--embeddings` 时产生成本。
+>
+> `apiSurface`（对外接口签名）的核心语义由 `exports: ExportSignature[]` 覆盖，未单独建模。
 
 #### 3.2.3 增量分析决策矩阵
 
