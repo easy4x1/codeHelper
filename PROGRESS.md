@@ -1,6 +1,6 @@
 # Code Repair Agent — 实现进度报告
 
-> 生成日期: 2026-06-03
+> 生成日期: 2026-06-03（最后更新: 2026-06-29，D 层语义增强完成）
 > 对比基准: DESIGN.md v1.0.0
 > 当前版本: 0.5.0 (Phase 5 学习与进化完成)
 
@@ -221,7 +221,7 @@
 | **类签名提取** | ✅ **Tree-sitter** | 类名、方法列表、属性列表、导出状态 |
 | **导入/导出提取** | ✅ **Tree-sitter** | 支持 named/default/namespace/side-effect import |
 | 三级变更分类 | ✅ | NONE / COSMETIC / STRUCTURAL |
-| 语义签名（扩展） | ❌ | 计划 Phase 2 |
+| 语义签名（解耦实现） | ✅ **C 层交付** | 不入指纹，由 `EmbeddingCache`（`<model>:<dim>:<textHash>`）按需计算存储 |
 | **Python 支持** | ✅ **新增** | 基础函数/类/导入提取 |
 
 ### 3.3 记忆中间层 ✅
@@ -230,7 +230,7 @@
 |--------|------|------|
 | L1: 仓库级静态知识 | ✅ | knowledgeGraph + fingerprints + importMap |
 | L2: 任务级动态记忆 | ✅ | taskId + analyzedFiles + recalledNodes + findings |
-| L3: 跨任务学习记忆 | ⚠️ 结构就绪 | 类型定义完成，待 Phase 5 填充逻辑 |
+| L3: 跨任务学习记忆 | ✅ 已完成 | taskHistory + faultPatterns + fixPatterns + projectConventions（Phase 5 填充） |
 | 序列化/反序列化 | ✅ | JSON 格式，Set 自动转换 |
 | 防御性拷贝 | ✅ | 所有 getter 返回深拷贝 |
 
@@ -315,7 +315,7 @@
 | **`tests/graph-enrich-b.test.ts`** | **12** | **GraphEnricher B 层：routes/events/middleware/data-access/tables + 保守模式负例** |
 | **`tests/graph-enrich-c.test.ts`** | **12** | **GraphEnricher C 层：similar_to/related 阈值分带 + top-K 剪枝 + 跨类型匿名聚类 + 确定性 id** |
 | **`tests/embedding-service.test.ts`** | **32** | **EmbeddingService 桩 + cosine + config 解析 + EmbeddingCache(LRU/持久化) + CachedEmbeddingService(仅 miss 触底) + LocalEmbeddingService 构造 + 真实 ONNX 模型 DoD eval(模型存在时启用,缺失则跳过)** |
-| **总计** | **351** | **39 个测试文件**（含 2 个真实 ONNX 模型 DoD 用例，模型缺失时自动跳过；Tavily 网络用例偶发超时与本层无关） |
+| **总计** | **354** | **39 个测试文件**（含 2 个真实 ONNX 模型 DoD 用例，模型缺失时自动跳过；Tavily 网络用例偶发超时与本层无关） |
 
 ---
 
@@ -432,10 +432,11 @@
 
 ### 6.3 技术债
 
-**当前状态：全部清空 ✅**
+**历史技术债：全部清空 ✅；新增 1 项可扩展性债（已记录，低优先级）**
 
 | 优先级 | 问题 | 位置 | 状态 |
 |--------|------|------|------|
+| 🟡 中 | **C 层相似度/聚类在节点组 > 2000 时整组跳过** — 成对余弦为 O(n²)，超 `MAX_GROUP_SIZE=2000` 时 `embeddingsEnricher`/`clusterEnricher` 跳过该组（有 `logger.warn`，非静默截断）。大仓库（单类型节点 >2000）C 层零产出。**待分桶降级（bucketed top-K / LSH 近邻）实现** | `src/core/graph-enrich.ts:467,548,693` | ⏳ 待实现（出现大仓库需求时） |
 | 低 | ~~`signaturesEqual` 用 `JSON.stringify` 比较~~ | ~~`src/core/fingerprint.ts`~~ | ✅ 已解决 |
 | 低 | ~~Patch 冲突处理粗糙~~ | ~~`src/core/patch.ts`~~ | ✅ 已解决 |
 | 低 | ~~知识图谱节点删除后可能残留孤儿边~~ | ~~`src/core/knowledge-graph.ts`~~ | ✅ 已解决 |
@@ -503,7 +504,7 @@ Phase 3（团队/高频场景）: 混合策略
 
 ## 7. 文件清单
 
-### 源代码（35 个文件）
+### 源代码（40 个文件）
 
 ```
 src/
@@ -521,7 +522,7 @@ src/
 │   ├── token-budget.ts           170 行  (Token 预算管理器 + metrics 集成)
 │   ├── token-estimator.ts        100 行  (模型感知 Token 估算)
 │   ├── llm-config.ts             180 行  (LLM 配置 + API key 安全)
-│   ├── web-search.ts             180 行  (Web 搜索引擎 + DuckDuckGo)
+│   ├── web-search.ts             180 行  (Web 搜索引擎 + Tavily + DuckDuckGo 降级)
 │   ├── git-executor.ts           200 行  (Git 操作封装 + 安全策略)
 │   ├── semantic-cache.ts         103 行  (语义缓存 + metrics 集成)
 │   ├── metrics.ts                ~220 行  (MetricsCollector — 全局指标)
@@ -529,7 +530,12 @@ src/
 │   ├── graph-enrich.ts           928 行  (GraphEnricher 管线：A/B/C/D 层 enricher)  ✅ **D 层新增**
 │   ├── graph-writer.ts           197 行  (fault/fix/pattern 节点写入图谱)
 │   ├── llm-semantic-cache.ts      39 行  (D 层 LLM 结果缓存)
-│   └── embedding-service.ts      511 行  (EmbeddingService 抽象 + LocalEmbeddingService(ONNX) + EmbeddingCache + 装饰器)
+│   ├── embedding-service.ts      511 行  (EmbeddingService 抽象 + LocalEmbeddingService(ONNX) + EmbeddingCache + 装饰器)
+│   ├── context-compressor.ts     100 行  (上下文压缩：大文件结构摘要)
+│   ├── result-cache.ts           117 行  (结果缓存：指纹哈希键)
+│   ├── pattern-extractor.ts      122 行  (模式提取：fault/fix 模式)
+│   ├── convention-learner.ts     102 行  (约定学习：命名/测试/架构)
+│   └── recommendation-engine.ts  100 行  (推荐引擎：任务-模式相似度)
 ├── agents/
 │   ├── base-agent.ts              47 行  (Agent 基类 + metrics 集成)
 │   ├── patch-generator-agent.ts   75 行  (Patch 生成 + LLM 增强)
@@ -547,7 +553,7 @@ src/
     ├── logger.ts                  36 行  (日志)
     └── hash.ts                     5 行  (哈希)
 
-总计: ~10,800 行代码 + **351** 个测试（**39** 个测试文件）
+总计: ~11,000 行代码 + **354** 个测试（**39** 个测试文件）
 ```
 
 ---
