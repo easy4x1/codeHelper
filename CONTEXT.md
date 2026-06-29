@@ -101,13 +101,14 @@
 ├── KEY-FINDINGS.md    # UA 深度分析关键发现
 ├── CONTEXT.md         # 本文件（上下文摘要）
 ├── PROGRESS.md        # 实现进度报告（随迭代更新）
+├── PROJECT-GUIDE.md   # 项目使用指南（面向集成开发者）
 ├── README.md          # 项目入口文档
 └── docs/              # 详细文档目录
-    ├── ARCHITECTURE.md  # 系统架构详解
-    ├── API.md           # CLI 与程序化 API 参考
-    ├── ENGINEERING-PLAN.md  # 工程实施计划
-    ├── TECH-PLAN.md     # 技术选型与实现方案
-    └── superpowers/     # AI 辅助开发计划
+    ├── ARCHITECTURE.md            # 系统架构详解
+    ├── API.md                     # CLI 与程序化 API 参考
+    ├── GRAPH-ENRICHMENT-PLAN.md   # 知识图谱 A/B/C/D 层语义增强方案
+    ├── D-LAYER-IMPLEMENTATION.md  # D 层 LLM 语义增强执行文档
+    └── EMBEDDING-SETUP.md         # C 层 Embedding 模型设置指南
 ```
 
 ---

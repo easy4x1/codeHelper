@@ -2,7 +2,7 @@
 
 > AI-powered code repair agent with fingerprint-based incremental analysis and multi-provider LLM support.
 
-[![Tests](https://img.shields.io/badge/tests-213%2F213%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-354%2F354%20passing-brightgreen)](#testing)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4-blue)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D24.0-green)](https://nodejs.org/)
 
