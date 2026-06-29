@@ -16,6 +16,11 @@ import type {
 
 const logger = createLogger('graph-enrich');
 
+/** Max functions referenced in one D-layer semantic-edge LLM batch. */
+const MAX_SEMANTIC_FUNCS_PER_BATCH = 15;
+/** Max candidate pairs in one D-layer semantic-edge LLM batch. */
+const MAX_SEMANTIC_PAIRS_PER_BATCH = 25;
+
 /**
  * Graph enrichment pipeline.
  *
@@ -884,38 +889,127 @@ export const architectureLayerEnricher: GraphEnricher = {
 
 /**
  * Semantic edges — identify `transforms` / `validates` relationships between functions.
+ *
+ * Strategy:
+ * 1. Build candidate pairs from existing `calls` edges (bidirectional), because a
+ *    callee often validates/transforms data for its caller, and a caller may
+ *    transform data before passing it to a callee.
+ * 2. Fall back to all ordered pairs for small files without call data.
+ * 3. Batch candidate pairs (not functions) so each LLM request stays small and
+ *    no single pair is ever split across batches.
  */
 export const semanticEdgeEnricher: GraphEnricher = {
   name: 'semantic_edges',
   layer: 'D',
   async enrich(builder, fingerprints, ctx) {
     if (!ctx.llm || !ctx.sources) return;
+
     for (const fp of Object.values(fingerprints)) {
       const source = ctx.sources[fp.filePath];
       if (!source) continue;
       if (fp.functions.length === 0) continue;
 
-      const functions = fp.functions.map(fn => {
-        const nodeId = `function:${fp.filePath}:${fn.name}`;
-        return {
-          id: nodeId,
-          name: fn.name,
-          signature: functionSignature(fn),
-          body: extractBody(source, fn.startLine, fn.endLine),
-        };
-      });
+      const funcIds = new Set(
+        fp.functions.map(f => `function:${fp.filePath}:${f.name}`)
+      );
 
-      const key = `semantic-edges:${fp.filePath}:${fp.contentHash}`;
-      const cached = ctx.llmCache?.get<SemanticEdgesResult>(key);
-      const result = cached ?? await ctx.llm.detectSemanticEdges({ functions });
+      // 1. Build bidirectional candidate pairs from `calls` edges.
+      const candidatePairs: Array<{ source: string; target: string }> = [];
+      const seen = new Set<string>();
 
-      for (const edge of result.edges) {
-        if (edge.source === edge.target) continue;
-        if (!builder.findNode(edge.source) || !builder.findNode(edge.target)) continue;
-        if (edge.type !== 'transforms' && edge.type !== 'validates') continue;
-        builder.addEdge(edge.source, edge.target, edge.type, edge.confidence);
+      const addCandidate = (src: string, tgt: string) => {
+        if (src === tgt) return;
+        const key = `${src}|${tgt}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        candidatePairs.push({ source: src, target: tgt });
+      };
+
+      for (const fn of fp.functions) {
+        const callerId = `function:${fp.filePath}:${fn.name}`;
+        const outgoing = builder.getEdgesBySource(callerId);
+        for (const edge of outgoing) {
+          if (edge.type !== 'calls') continue;
+          if (!funcIds.has(edge.target)) continue;
+
+          // callee -> caller: typical validate/transform provider
+          addCandidate(edge.target, edge.source);
+          // caller -> callee: caller may prepare/transform data before call
+          addCandidate(edge.source, edge.target);
+        }
       }
-      ctx.llmCache?.set(key, result);
+
+      // 2. Fallback for small files without call data: all ordered pairs.
+      if (candidatePairs.length === 0 && fp.functions.length <= 8) {
+        for (let i = 0; i < fp.functions.length; i++) {
+          for (let j = 0; j < fp.functions.length; j++) {
+            if (i === j) continue;
+            const src = `function:${fp.filePath}:${fp.functions[i].name}`;
+            const tgt = `function:${fp.filePath}:${fp.functions[j].name}`;
+            addCandidate(src, tgt);
+          }
+        }
+      }
+
+      if (candidatePairs.length === 0) continue;
+
+      // 3. Batch pairs atomically by referenced function count and pair count.
+      const batches: Array<typeof candidatePairs> = [];
+      let current: typeof candidatePairs = [];
+      const currentFuncs = new Set<string>();
+
+      for (const pair of candidatePairs) {
+        const nextFuncs = new Set(currentFuncs);
+        nextFuncs.add(pair.source);
+        nextFuncs.add(pair.target);
+
+        if (
+          current.length >= MAX_SEMANTIC_PAIRS_PER_BATCH ||
+          nextFuncs.size > MAX_SEMANTIC_FUNCS_PER_BATCH
+        ) {
+          batches.push(current);
+          current = [pair];
+          currentFuncs.clear();
+          currentFuncs.add(pair.source);
+          currentFuncs.add(pair.target);
+        } else {
+          current.push(pair);
+          currentFuncs.add(pair.source);
+          currentFuncs.add(pair.target);
+        }
+      }
+      if (current.length) batches.push(current);
+
+      // 4. Run one LLM request per batch.
+      // Cache key is versioned (v2) so old cached empty results are not reused.
+      const baseKey = `semantic-edges:v2:${fp.filePath}:${fp.contentHash}`;
+
+      for (let idx = 0; idx < batches.length; idx++) {
+        const batch = batches[idx];
+        const referencedIds = new Set(batch.flatMap(p => [p.source, p.target]));
+
+        const functions = fp.functions
+          .filter(f => referencedIds.has(`function:${fp.filePath}:${f.name}`))
+          .map(fn => ({
+            id: `function:${fp.filePath}:${fn.name}`,
+            name: fn.name,
+            signature: functionSignature(fn),
+            body: extractBody(source, fn.startLine, fn.endLine),
+          }));
+
+        const cacheKey = `${baseKey}:batch:${idx}`;
+        const cached = ctx.llmCache?.get<SemanticEdgesResult>(cacheKey);
+        const result = cached ?? await ctx.llm.detectSemanticEdges({ functions, candidates: batch });
+
+        for (const edge of result.edges) {
+          if (edge.source === edge.target) continue;
+          if (!builder.findNode(edge.source) || !builder.findNode(edge.target)) continue;
+          if (edge.type !== 'transforms' && edge.type !== 'validates') continue;
+          builder.addEdge(edge.source, edge.target, edge.type, edge.confidence);
+        }
+
+        ctx.llmCache?.set(cacheKey, result);
+      }
     }
   },
 };

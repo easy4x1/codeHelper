@@ -41,6 +41,7 @@ export interface LlmService {
 
   detectSemanticEdges(params: {
     functions: Array<{ id: string; name: string; signature: string; body: string }>;
+    candidates?: Array<{ source: string; target: string }>;
   }): Promise<SemanticEdgesResult>;
 }
 
@@ -127,6 +128,46 @@ export interface PatchLlmResult {
   originalCode: string;
   modifiedCode: string;
   changeType: 'modify' | 'add' | 'delete';
+}
+
+/**
+ * Attempt to repair a truncated JSON string by closing any unclosed string
+ * and any open arrays/objects. This is a best-effort recovery used when an
+ * LLM response hits its output token limit mid-JSON.
+ */
+export function repairTruncatedJson(text: string): string {
+  // Trim trailing commas so partial objects/arrays remain valid after closing.
+  let repaired = text.trimEnd().replace(/,\s*$/, '');
+
+  let inString = false;
+  let escape = false;
+  const stack: string[] = [];
+
+  for (const ch of repaired) {
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+
+    if (ch === '{' || ch === '[') {
+      stack.push(ch === '{' ? '}' : ']');
+    } else if (ch === '}' || ch === ']') {
+      stack.pop();
+    }
+  }
+
+  if (inString) repaired += '"';
+  while (stack.length) repaired += stack.pop();
+  return repaired;
 }
 
 /**
@@ -503,8 +544,35 @@ export class TemplateLlmService implements LlmService {
 
   async detectSemanticEdges(params: {
     functions: Array<{ id: string; name: string; signature: string; body: string }>;
+    candidates?: Array<{ source: string; target: string }>;
   }): Promise<SemanticEdgesResult> {
     const edges: SemanticEdgesResult['edges'] = [];
+    const funcMap = new Map(params.functions.map(f => [f.id, f]));
+
+    const pairs = params.candidates;
+    if (pairs && pairs.length > 0) {
+      for (const { source, target } of pairs) {
+        const f = funcMap.get(source);
+        const g = funcMap.get(target);
+        if (!f || !g) continue;
+
+        const text = `${f.name} ${f.signature} ${f.body}`.toLowerCase();
+        if (f.name.toLowerCase().includes('validate') || text.includes('validate')) {
+          edges.push({ source: f.id, target: g.id, type: 'validates', confidence: 0.6 });
+        } else if (
+          f.name.toLowerCase().includes('parse') ||
+          f.name.toLowerCase().includes('format') ||
+          f.name.toLowerCase().includes('transform') ||
+          f.name.toLowerCase().includes('convert')
+        ) {
+          edges.push({ source: f.id, target: g.id, type: 'transforms', confidence: 0.6 });
+        }
+      }
+      return { edges };
+    }
+
+    // Fallback: no candidates provided — keep the original all-pairs heuristic
+    // for backward compatibility with callers that do not supply candidates.
     const funcs = params.functions;
     for (let i = 0; i < funcs.length; i++) {
       const f = funcs[i];
@@ -603,10 +671,13 @@ export class AnthropicLlmService implements LlmService {
   /**
    * Extract JSON from LLM response text.
    * Some providers (e.g. kimi) wrap JSON in markdown code blocks (```json ... ```).
-   * This strips the wrapper before parsing.
+   * This strips the wrapper before parsing. If the JSON is truncated, it attempts
+   * to close open strings and brackets before giving up.
    */
   private extractJson(text: string): unknown {
     const trimmed = text.trim();
+    let json = trimmed;
+
     // Strip markdown code block if present
     if (trimmed.startsWith('```')) {
       const lines = trimmed.split('\n');
@@ -614,9 +685,15 @@ export class AnthropicLlmService implements LlmService {
       if (lines[0].startsWith('```')) lines.shift();
       // Remove last line (```)
       if (lines[lines.length - 1].trim() === '```') lines.pop();
-      return JSON.parse(lines.join('\n'));
+      json = lines.join('\n').trim();
     }
-    return JSON.parse(trimmed);
+
+    try {
+      return JSON.parse(json);
+    } catch (err) {
+      const repaired = repairTruncatedJson(json);
+      return JSON.parse(repaired);
+    }
   }
 
   constructor(config?: LlmProviderConfig) {
@@ -975,20 +1052,37 @@ Respond ONLY with a JSON object in this exact format (no markdown, no explanatio
 
   async detectSemanticEdges(params: {
     functions: Array<{ id: string; name: string; signature: string; body: string }>;
+    candidates?: Array<{ source: string; target: string }>;
   }): Promise<SemanticEdgesResult> {
     if (!this.client) {
       logger.info('Anthropic client not available — using template fallback for detectSemanticEdges');
       return this.fallback.detectSemanticEdges(params);
     }
     try {
+      const funcMap = new Map(params.functions.map(f => [f.id, f]));
+      const candidateList = params.candidates ?? [];
+
       const functionsText = params.functions
-        .map(f => `- ${f.name}(${f.signature})\n${f.body.slice(0, 400)}`)
-        .join('\n---\n');
-      const prompt = `Analyze the following functions and identify semantic relationships. Only include high-confidence pairs.
-- "transforms": function A converts/changes data and the result is used by function B
+        .map(f => `- ${f.id}\n  ${f.name}(${f.signature})\n  ${f.body.replace(/\s+/g, ' ').trim().slice(0, 300)}`)
+        .join('\n\n');
+
+      const candidatesText = candidateList
+        .map(c => `- ${c.source} -> ${c.target}`)
+        .join('\n');
+
+      const prompt = `Analyze the following functions and candidate semantic relationships.
+
+Definitions:
+- "transforms": function A converts/changes data and the result is consumed by function B
 - "validates": function A checks/constrains input before function B uses it
 
-Functions:\n${functionsText}
+Functions:
+${functionsText}
+
+Candidate pairs (source -> target):
+${candidatesText}
+
+For each candidate pair, decide if there is a high-confidence "transforms" or "validates" relationship. Only include edges with confidence >= 0.7. Omit pairs with no clear relation.
 
 Respond ONLY with a JSON object in this exact format (no markdown, no explanation):
 {
@@ -996,9 +1090,11 @@ Respond ONLY with a JSON object in this exact format (no markdown, no explanatio
     {"source": "function:file:validateInput", "target": "function:file:processInput", "type": "validates", "confidence": 0.9}
   ]
 }`;
+
+      const maxTokens = Math.min(4096, 512 + candidateList.length * 120);
       const response = await this.client.messages.create({
         model: this.model,
-        max_tokens: 1024,
+        max_tokens: maxTokens,
         messages: [{ role: 'user', content: prompt }],
       });
       const content = response.content[0];
@@ -1147,6 +1243,7 @@ export class HttpLlmService implements LlmService {
 
   async detectSemanticEdges(params: {
     functions: Array<{ id: string; name: string; signature: string; body: string }>;
+    candidates?: Array<{ source: string; target: string }>;
   }): Promise<SemanticEdgesResult> {
     if (!this.config.apiKey || !this.baseUrl) {
       return this.fallback.detectSemanticEdges(params);

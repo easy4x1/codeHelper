@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { TemplateLlmService, AnthropicLlmService } from '../src/core/llm-service.js';
+import {
+  TemplateLlmService,
+  AnthropicLlmService,
+  repairTruncatedJson,
+} from '../src/core/llm-service.js';
 import { parseContext, repoScannerContextSchema, faultDetectorContextSchema } from '../src/core/types.js';
 
 describe('TemplateLlmService', () => {
@@ -178,5 +182,33 @@ describe('Agent Context Validation', () => {
     const valid = parseContext({}, faultDetectorContextSchema);
     expect(valid.targetFiles).toEqual([]);
     expect(valid.repoPath).toBe('.');
+  });
+});
+
+describe('repairTruncatedJson', () => {
+  it('closes an unclosed string and object', () => {
+    const truncated = '{"edges":[{"source":"a","target":"b","type":"validates","confidence":0.9';
+    const repaired = repairTruncatedJson(truncated);
+    expect(JSON.parse(repaired)).toEqual({
+      edges: [{ source: 'a', target: 'b', type: 'validates', confidence: 0.9 }],
+    });
+  });
+
+  it('closes nested arrays and objects', () => {
+    const truncated = '{"edges":[{"source":"a","target":"b","type":"validates","confidence":0.9},{"source":"c","target":"d","type":"transforms"';
+    const repaired = repairTruncatedJson(truncated);
+    const parsed = JSON.parse(repaired) as { edges: unknown[] };
+    expect(parsed.edges[0]).toEqual({
+      source: 'a',
+      target: 'b',
+      type: 'validates',
+      confidence: 0.9,
+    });
+    expect(parsed.edges.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('returns valid JSON unchanged', () => {
+    const valid = '{"edges":[]}';
+    expect(repairTruncatedJson(valid)).toBe(valid);
   });
 });

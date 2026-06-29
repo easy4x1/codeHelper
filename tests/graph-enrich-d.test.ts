@@ -24,7 +24,7 @@ function createFixture(): {
       filePath,
       contentHash: 'auth-hash',
       functions: [
-        { name: 'loginUser', params: ['username', 'password'], returnType: 'string', isExported: true, startLine: 1, endLine: 10 },
+        { name: 'loginUser', params: ['username', 'password'], returnType: 'string', isExported: true, startLine: 1, endLine: 10, calls: ['validatePassword'] },
         { name: 'validatePassword', params: ['password'], returnType: 'boolean', isExported: false, startLine: 12, endLine: 20 },
       ],
       classes: [],
@@ -40,6 +40,7 @@ function createFixture(): {
   builder.addNode({ id: `function:${filePath}:validatePassword`, type: 'function', name: 'validatePassword', filePath });
   builder.addEdge(`file:${filePath}`, `function:${filePath}:loginUser`, 'contains', 1.0);
   builder.addEdge(`file:${filePath}`, `function:${filePath}:validatePassword`, 'contains', 1.0);
+  builder.addEdge(`function:${filePath}:loginUser`, `function:${filePath}:validatePassword`, 'calls', 0.9);
 
   // C-layer style anonymous concept cluster
   builder.addNode({ id: 'concept:cluster:abc123', type: 'concept', name: 'cluster-abc123' });

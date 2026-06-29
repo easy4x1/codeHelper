@@ -1,6 +1,6 @@
 # D 层 LLM 语义增强 — 执行文档
 
-> 状态：待实现  
+> 状态：已完成  
 > 决策确认：
 > 1. **纳入 `semanticEdgeEnricher`**（`transforms` / `validates` 边）
 > 2. **D 层默认关闭**，仅当显式传入 `--semantic` 时启用
