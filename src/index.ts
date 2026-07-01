@@ -863,19 +863,22 @@ async function main(): Promise<void> {
     .option('-r, --repo <path>', 'Repository path', '.')
     .option('--file <file>', 'Target file(s)', (val: string, prev: string[]) => prev.concat([val]), [])
     .option('--auto-push', 'Automatically apply without confirmation', false)
-    .option('--llm <provider>', 'LLM provider: anthropic | template (auto-detected from env if not specified)')
+    .option('--provider <name>', 'LLM provider: anthropic | openai | moonshot | deepseek | zhipu | template (auto-detected from env if not specified)')
+    .option('--model <name>', 'Model name (e.g. claude-sonnet-4-6, kimi-k2.5, glm-5.1, gpt-5.4)')
+    .option('--llm <provider>', 'Deprecated alias for --provider')
     .option('--budget <tokens>', 'Total token budget', '50000')
     .option('--web-search', 'Enable web search for solutions', true)
     .option('--no-web-search', 'Disable web search for solutions')
     .option('--create-pr', 'Open a pull request after pushing (uses gh CLI, falls back to a compare URL)', false)
-    .action(async (description: string, options: { repo: string; file: string[]; autoPush: boolean; llm?: string; budget: string; webSearch: boolean; createPr: boolean }) => {
+    .action(async (description: string, options: { repo: string; file: string[]; autoPush: boolean; provider?: string; model?: string; llm?: string; budget: string; webSearch: boolean; createPr: boolean }) => {
       const fixStart = Date.now();
       try {
-        const llmService = options.llm;
+        const provider = options.provider ?? options.llm;
         const total = parseInt(options.budget, 10);
         const agent = new CodeRepairAgent({
           verbose: true,
-          llmService,
+          provider,
+          model: options.model,
           webSearch: options.webSearch,
           git: options.createPr ? { push: { remote: 'origin', force: false, createPR: true } } : undefined,
           tokenBudget: {
@@ -972,7 +975,9 @@ async function main(): Promise<void> {
     .argument('<tasks-file>', 'Path to batch tasks JSON file')
     .option('-r, --repo <path>', 'Repository path', '.')
     .option('--auto-push', 'Automatically apply all without confirmation', false)
-    .option('--llm <provider>', 'LLM provider: anthropic | template (auto-detected from env if not specified)')
+    .option('--provider <name>', 'LLM provider: anthropic | openai | moonshot | deepseek | zhipu | template (auto-detected from env if not specified)')
+    .option('--model <name>', 'Model name (e.g. claude-sonnet-4-6, kimi-k2.5, glm-5.1, gpt-5.4)')
+    .option('--llm <provider>', 'Deprecated alias for --provider')
     .option('--budget <tokens>', 'Total token budget per task', '50000')
     .option('--web-search', 'Enable web search', true)
     .option('--no-web-search', 'Disable web search')
@@ -980,6 +985,8 @@ async function main(): Promise<void> {
     .action(async (tasksFile: string, options: {
       repo: string;
       autoPush: boolean;
+      provider?: string;
+      model?: string;
       llm?: string;
       budget: string;
       webSearch: boolean;
@@ -996,7 +1003,7 @@ async function main(): Promise<void> {
           process.exit(1);
         }
 
-        const llmService = options.llm;
+        const provider = options.provider ?? options.llm;
         const total = parseInt(options.budget, 10);
         const autoPush = options.autoPush || batchData.options?.autoPush || false;
         const webSearch = options.webSearch !== false && batchData.options?.webSearch !== false;
@@ -1016,7 +1023,8 @@ async function main(): Promise<void> {
           try {
             const agent = new CodeRepairAgent({
               verbose: true,
-              llmService,
+              provider,
+              model: options.model,
               webSearch,
               tokenBudget: {
                 total,

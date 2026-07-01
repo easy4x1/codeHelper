@@ -99,6 +99,8 @@ Applied: 1 file(s)
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--auto-push` | `false` | Apply without confirmation |
+| `--create-pr` | `false` | Open a pull request after pushing (uses `gh` CLI, falls back to a compare URL) |
+| `--llm <provider>` | — | Deprecated alias for `--provider` |
 
 ---
 
@@ -184,8 +186,13 @@ code-agent batch tasks.json --parallel --auto-push
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `--provider <name>` | auto-detect | LLM provider (anthropic \| openai \| moonshot \| deepseek \| zhipu \| template) |
+| `--model <name>` | provider default | Model name |
+| `--budget <tokens>` | `50000` | Token budget per task |
+| `--web-search` / `--no-web-search` | enabled | Toggle web search |
 | `--parallel` | `false` | Run tasks in parallel instead of sequential |
 | `--auto-push` | `false` | Auto-push after each task completion |
+| `--llm <provider>` | — | Deprecated alias for `--provider` |
 
 ---
 

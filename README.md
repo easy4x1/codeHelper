@@ -109,7 +109,7 @@ This scans the repository, builds a knowledge graph, and persists fingerprints t
 
 ```bash
 # Interactive fix (plan → patch → review → apply)
-code-agent fix "Fix memory leak in user service" --llm anthropic
+code-agent fix "Fix memory leak in user service" --provider anthropic --model claude-sonnet-4-6
 
 # Generate plan only
 code-agent plan "Refactor auth module" --provider moonshot --model kimi-k2.5
@@ -144,11 +144,11 @@ code-agent sync ./my-project
 |---------|-------------|---------|
 | `init [repo-path]` | Scan repo and build knowledge graph | `--embeddings [provider]`, `--semantic` |
 | `plan <description>` | Generate repair plan only | `--provider`, `--model`, `--budget`, `--file`, `--web-search` |
-| `fix <description>` | Full interactive repair flow | `--llm`, `--budget`, `--auto-push`, `--file`, `--web-search`, `--create-pr` |
+| `fix <description>` | Full interactive repair flow | `--provider`, `--model`, `--budget`, `--auto-push`, `--file`, `--web-search`, `--create-pr` |
 | `apply <plan-id>` | Apply approved plan non-interactively | `--dry-run` |
 | `sync [repo-path]` | Incremental sync after code changes | `--force-full`, `--embeddings [provider]`, `--semantic` |
 | `status [repo-path]` | Show knowledge graph statistics | — |
-| `batch <tasks.json>` | Batch process multiple repair tasks | `--llm`, `--budget`, `--auto-push`, `--web-search`, `--parallel` |
+| `batch <tasks.json>` | Batch process multiple repair tasks | `--provider`, `--model`, `--budget`, `--auto-push`, `--web-search`, `--parallel` |
 | `history` | View task history, patterns, conventions | `--patterns`, `--conventions` |
 | `learn [repo-path]` | Learn project conventions from codebase | — |
 | `metrics` | Show performance metrics and statistics | `--json`, `--reset` |
@@ -163,6 +163,8 @@ code-agent sync ./my-project
 | **DeepSeek** | `deepseek-chat`, `deepseek-coder` | `DEEPSEEK_API_KEY` |
 | **Zhipu (GLM)** | `glm-5.1` | `ZHIPU_API_KEY` |
 | **Template** (mock) | — | None |
+
+Select the provider and model consistently across `plan`, `fix`, and `batch` with `--provider <name>` and `--model <name>`. When omitted, the provider is auto-detected from environment API keys and the model defaults to that provider's default. (`--llm` remains as a deprecated alias for `--provider`.)
 
 ## Architecture
 
