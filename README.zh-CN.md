@@ -109,7 +109,7 @@ code-agent init ./my-project
 
 ```bash
 # 交互式修复（plan → patch → review → apply）
-code-agent fix "Fix memory leak in user service" --llm anthropic
+code-agent fix "Fix memory leak in user service" --provider anthropic --model claude-sonnet-4-6
 
 # 仅生成方案
 code-agent plan "Refactor auth module" --provider moonshot --model kimi-k2.5
@@ -144,11 +144,11 @@ code-agent sync ./my-project
 |------|------|------|
 | `init [repo-path]` | 扫描仓库并构建知识图谱 | `--embeddings [provider]`、`--semantic` |
 | `plan <description>` | 仅生成修复方案 | `--provider`、`--model`、`--budget`、`--file`、`--web-search` |
-| `fix <description>` | 完整交互式修复流程 | `--llm`、`--budget`、`--auto-push`、`--file`、`--web-search`、`--create-pr` |
+| `fix <description>` | 完整交互式修复流程 | `--provider`、`--model`、`--budget`、`--auto-push`、`--file`、`--web-search`、`--create-pr` |
 | `apply <plan-id>` | 非交互式应用已审核方案 | `--dry-run` |
 | `sync [repo-path]` | 代码变更后增量同步 | `--force-full`、`--embeddings [provider]`、`--semantic` |
 | `status [repo-path]` | 显示知识图谱统计 | — |
-| `batch <tasks.json>` | 批量处理多个修复任务 | `--llm`、`--budget`、`--auto-push`、`--web-search`、`--parallel` |
+| `batch <tasks.json>` | 批量处理多个修复任务 | `--provider`、`--model`、`--budget`、`--auto-push`、`--web-search`、`--parallel` |
 | `history` | 查看任务历史、模式、约定 | `--patterns`、`--conventions` |
 | `learn [repo-path]` | 从代码库学习项目约定 | — |
 | `metrics` | 显示性能指标与统计 | `--json`、`--reset` |
@@ -163,6 +163,8 @@ code-agent sync ./my-project
 | **DeepSeek** | `deepseek-chat`、`deepseek-coder` | `DEEPSEEK_API_KEY` |
 | **Zhipu (GLM)** | `glm-5.1` | `ZHIPU_API_KEY` |
 | **Template**（模拟） | — | 无 |
+
+`plan`、`fix`、`batch` 均以一致的 `--provider <name>` 与 `--model <name>` 选择厂商与模型。省略时，厂商会从环境变量中的 API key 自动探测，模型回退到该厂商的默认值。（`--llm` 保留为 `--provider` 的已弃用别名。）
 
 ## 架构
 
