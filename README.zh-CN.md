@@ -109,7 +109,7 @@ code-agent init ./my-project
 
 ```bash
 # 交互式修复（plan → patch → review → apply）
-code-agent fix "Fix memory leak in user service" --provider anthropic --model claude-sonnet-4-6
+code-agent fix "Fix memory leak in user service" --llm anthropic
 
 # 仅生成方案
 code-agent plan "Refactor auth module" --provider moonshot --model kimi-k2.5
@@ -142,15 +142,15 @@ code-agent sync ./my-project
 
 | 命令 | 说明 | 选项 |
 |------|------|------|
-| `init [repo-path]` | 扫描仓库并构建知识图谱 | — |
+| `init [repo-path]` | 扫描仓库并构建知识图谱 | `--embeddings [provider]`、`--semantic` |
 | `plan <description>` | 仅生成修复方案 | `--provider`、`--model`、`--budget`、`--file`、`--web-search` |
-| `fix <description>` | 完整交互式修复流程 | `--provider`、`--model`、`--budget`、`--auto-push`、`--file`、`--web-search` |
+| `fix <description>` | 完整交互式修复流程 | `--llm`、`--budget`、`--auto-push`、`--file`、`--web-search`、`--create-pr` |
 | `apply <plan-id>` | 非交互式应用已审核方案 | `--dry-run` |
-| `sync [repo-path]` | 代码变更后增量同步 | `--force-full` |
+| `sync [repo-path]` | 代码变更后增量同步 | `--force-full`、`--embeddings [provider]`、`--semantic` |
 | `status [repo-path]` | 显示知识图谱统计 | — |
-| `batch <tasks.json>` | 批量处理多个修复任务 | `--parallel`、`--auto-push` |
-| `history` | 查看任务历史、模式、约定 | — |
-| `learn` | 从代码库学习项目约定 | — |
+| `batch <tasks.json>` | 批量处理多个修复任务 | `--llm`、`--budget`、`--auto-push`、`--web-search`、`--parallel` |
+| `history` | 查看任务历史、模式、约定 | `--patterns`、`--conventions` |
+| `learn [repo-path]` | 从代码库学习项目约定 | — |
 | `metrics` | 显示性能指标与统计 | `--json`、`--reset` |
 
 ## 支持的 LLM Provider

@@ -109,7 +109,7 @@ This scans the repository, builds a knowledge graph, and persists fingerprints t
 
 ```bash
 # Interactive fix (plan → patch → review → apply)
-code-agent fix "Fix memory leak in user service" --provider anthropic --model claude-sonnet-4-6
+code-agent fix "Fix memory leak in user service" --llm anthropic
 
 # Generate plan only
 code-agent plan "Refactor auth module" --provider moonshot --model kimi-k2.5
@@ -142,15 +142,15 @@ code-agent sync ./my-project
 
 | Command | Description | Options |
 |---------|-------------|---------|
-| `init [repo-path]` | Scan repo and build knowledge graph | — |
+| `init [repo-path]` | Scan repo and build knowledge graph | `--embeddings [provider]`, `--semantic` |
 | `plan <description>` | Generate repair plan only | `--provider`, `--model`, `--budget`, `--file`, `--web-search` |
-| `fix <description>` | Full interactive repair flow | `--provider`, `--model`, `--budget`, `--auto-push`, `--file`, `--web-search` |
+| `fix <description>` | Full interactive repair flow | `--llm`, `--budget`, `--auto-push`, `--file`, `--web-search`, `--create-pr` |
 | `apply <plan-id>` | Apply approved plan non-interactively | `--dry-run` |
-| `sync [repo-path]` | Incremental sync after code changes | `--force-full` |
+| `sync [repo-path]` | Incremental sync after code changes | `--force-full`, `--embeddings [provider]`, `--semantic` |
 | `status [repo-path]` | Show knowledge graph statistics | — |
-| `batch <tasks.json>` | Batch process multiple repair tasks | `--parallel`, `--auto-push` |
-| `history` | View task history, patterns, conventions | — |
-| `learn` | Learn project conventions from codebase | — |
+| `batch <tasks.json>` | Batch process multiple repair tasks | `--llm`, `--budget`, `--auto-push`, `--web-search`, `--parallel` |
+| `history` | View task history, patterns, conventions | `--patterns`, `--conventions` |
+| `learn [repo-path]` | Learn project conventions from codebase | — |
 | `metrics` | Show performance metrics and statistics | `--json`, `--reset` |
 
 ## Supported LLM Providers
