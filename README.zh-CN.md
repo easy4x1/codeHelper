@@ -195,16 +195,6 @@ npm run test:run
 npm run dev
 ```
 
-## 文档
-
-- [DESIGN.md](DESIGN.md) —— 系统设计（v1.0.0）
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— 架构详解
-- [docs/API.md](docs/API.md) —— CLI 与程序化 API 参考
-- [docs/EMBEDDING-SETUP.md](docs/EMBEDDING-SETUP.md) —— C 层 Embedding 模型设置与离线踩坑
-- [PROGRESS.md](PROGRESS.md) —— 实现进度
-- [CONTEXT.md](CONTEXT.md) —— 项目背景与决策
-- [KEY-FINDINGS.md](KEY-FINDINGS.md) —— Understand-Anything 分析
-
 ## 许可证
 
 MIT

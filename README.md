@@ -195,16 +195,6 @@ npm run test:run
 npm run dev
 ```
 
-## Documentation
-
-- [DESIGN.md](DESIGN.md) — System design (v1.0.0)
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Architecture details
-- [docs/API.md](docs/API.md) — CLI and programmatic API reference
-- [docs/EMBEDDING-SETUP.md](docs/EMBEDDING-SETUP.md) — C-layer embedding model setup + offline pitfalls
-- [PROGRESS.md](PROGRESS.md) — Implementation progress
-- [CONTEXT.md](CONTEXT.md) — Project background and decisions
-- [KEY-FINDINGS.md](KEY-FINDINGS.md) — Understand-Anything analysis
-
 ## License
 
 MIT
