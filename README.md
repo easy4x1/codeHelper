@@ -1,8 +1,10 @@
 # Code Repair Agent
 
+**English** · [简体中文](./README.zh-CN.md)
+
 > AI-powered code repair agent with fingerprint-based incremental analysis and multi-provider LLM support.
 
-[![Tests](https://img.shields.io/badge/tests-354%2F354%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-354%2F354%20passing-brightgreen)](#development)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4-blue)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D24.0-green)](https://nodejs.org/)
 
@@ -10,18 +12,18 @@ Code Repair Agent is a structured, multi-agent pipeline for automated code repai
 
 ## Features
 
-- **🔍 Hybrid Code Analysis** — Repository scanning, knowledge-graph construction, and fault detection through a Tree-sitter + LLM architecture across six languages.
-- **🧠 Three-Layer Memory** — Repository-static (L1), task-dynamic (L2), and cross-task learned (L3) memory, all persisted automatically.
-- **⚡ Incremental Analysis** — Structural fingerprinting skips unchanged files, cutting token usage by 80–95% on incremental tasks.
-- **🌊 Fault Propagation** — Probability-weighted BFS traversal traces impact along call chains to scope the analysis set.
-- **💰 Token Budget Control** — A four-tier degradation ladder (reduce depth → disable search → core-only → prompt user) enforces a configurable budget.
-- **🌐 Multi-Provider LLM** — Anthropic, OpenAI, Moonshot (Kimi), DeepSeek, and Zhipu (GLM), with model-aware token estimation and automatic fallback.
-- **🔎 Web Search** — Tavily as the primary provider (keyless or API-key), with DuckDuckGo and simulation fallbacks plus result caching.
-- **🕸 Knowledge-Graph Enrichment** — Layered semantic enrichment beyond the deterministic core graph (A: static, B: framework-aware, C: embeddings, D: LLM).
-- **🤖 Git Automation** — Automated branch creation, commit, and push, guarded by protected-branch and pre-commit safety checks.
-- **📊 Observability** — Built-in metrics for agent latency, token usage, cache hit rates, and parser coverage.
-- **🎓 Continuous Learning** — Fault/fix pattern extraction, project-convention learning, and recommendation of prior solutions.
-- **🔒 Secure Review Flow** — Layered API-key resolution with log masking, and a human-in-the-loop diff review before any change is applied.
+- **Hybrid Code Analysis** — Repository scanning, knowledge-graph construction, and fault detection through a Tree-sitter + LLM architecture across six languages.
+- **Three-Layer Memory** — Repository-static (L1), task-dynamic (L2), and cross-task learned (L3) memory, all persisted automatically.
+- **Incremental Analysis** — Structural fingerprinting skips unchanged files, cutting token usage by 80–95% on incremental tasks.
+- **Fault Propagation** — Probability-weighted BFS traversal traces impact along call chains to scope the analysis set.
+- **Token Budget Control** — A four-tier degradation ladder (reduce depth → disable search → core-only → prompt user) enforces a configurable budget.
+- **Multi-Provider LLM** — Anthropic, OpenAI, Moonshot (Kimi), DeepSeek, and Zhipu (GLM), with model-aware token estimation and automatic fallback.
+- **Web Search** — Tavily as the primary provider (keyless or API-key), with DuckDuckGo and simulation fallbacks plus result caching.
+- **Knowledge-Graph Enrichment** — Layered semantic enrichment beyond the deterministic core graph (A: static, B: framework-aware, C: embeddings, D: LLM).
+- **Git Automation** — Automated branch creation, commit, and push, guarded by protected-branch and pre-commit safety checks.
+- **Observability** — Built-in metrics for agent latency, token usage, cache hit rates, and parser coverage.
+- **Continuous Learning** — Fault/fix pattern extraction, project-convention learning, and recommendation of prior solutions.
+- **Secure Review Flow** — Layered API-key resolution with log masking, and a human-in-the-loop diff review before any change is applied.
 
 ## Quick Start
 
@@ -162,18 +164,6 @@ code-agent sync ./my-project
 | **Zhipu (GLM)** | `glm-5.1` | `ZHIPU_API_KEY` |
 | **Template** (mock) | — | None |
 
-### Token Estimation by Model
-
-Different tokenizers produce different token counts for the same text. The agent automatically selects the correct estimation ratio:
-
-| Model Family | chars/token | Chinese Adaptive |
-|-------------|-------------|-----------------|
-| GLM-5.1 | 2.5 | ✓ |
-| Kimi K2 | 2.6 | ✓ |
-| DeepSeek | 2.8 | ✓ |
-| GPT-5.4/5.5 | 3.4-3.5 | ✓ |
-| Claude | 3.8 | ✓ |
-
 ## Architecture
 
 ```
@@ -204,18 +194,6 @@ npm run test:run
 # Watch mode
 npm run dev
 ```
-
-## Project Status
-
-| Phase | Status | Description |
-|-------|--------|-------------|
-| Phase 1: MVP | ✅ 100% | Core loop: scan → detect → plan → patch → review |
-| Phase 2: Memory Optimization | ✅ 100% | Fingerprinting, fault propagation, token budgeting |
-| Phase 3: Web Enhancement | ✅ 100% | Web search, result fusion, LLM patch generation, caching, batching |
-| Phase 4: Automation | ✅ 100% | Git automation, CI/CD, batch processing, metrics |
-| Phase 5: Learning | ✅ 100% | Pattern extraction, project conventions, recommendations |
-
-See [PROGRESS.md](PROGRESS.md) for detailed progress.
 
 ## Documentation
 
